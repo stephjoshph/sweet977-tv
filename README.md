@@ -23,4 +23,8 @@ GitHub builds it: every change to `main` (or **Actions → Build TV app → Run 
 
 The build needs one repository secret, **TV_SIGNING** (Settings → Secrets and variables → Actions). Keep a copy of it somewhere safe: every future version must be signed with the same key, or it won't install over the old one.
 
-To point the app at a different website, change `SITE` in `app/src/main/java/fm/sweet977/tv/Config.java`.
+## Moving the website
+
+Change the address in **`site.txt`** (edit it right here on GitHub and commit). Every TV reads that file at startup, once a day, and whenever the website can't be reached, then switches by itself. No new build or reinstall is needed.
+
+If a TV can't reach GitHub, set the address on the TV instead: press OK → *Website address*. `Config.java` only holds the address a brand-new install starts with.

@@ -45,7 +45,7 @@ final class Store {
 
     private final File dir;
     private final File page;
-    private final String host;
+    private volatile String host;
     private final ExecutorService bg = Executors.newSingleThreadExecutor();
     private final Set<String> queued = Collections.synchronizedSet(new HashSet<String>());
     volatile String userAgent = "";
@@ -55,13 +55,19 @@ final class Store {
         dir = new File(c.getFilesDir(), "keep");
         dir.mkdirs();
         page = new File(dir, "page.html");
-        host = Uri.parse(Config.SITE).getHost();
+        host = Site.host(c);
         bg.execute(new Runnable() {
             @Override
             public void run() {
                 tidy();
             }
         });
+    }
+
+    /** The website moved: save files under its new address from now on. */
+    void setHost(String h) {
+        host = h == null ? "" : h;
+        if (page.exists()) page.delete();
     }
 
     boolean hasPage() {

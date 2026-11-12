@@ -1,0 +1,3 @@
+# The website the LED screen app shows. When the website moves, change the line below.
+# Every TV switches to it by itself (at startup, once a day, and whenever the old address stops working).
+https://sweet977.freehosting.dev/

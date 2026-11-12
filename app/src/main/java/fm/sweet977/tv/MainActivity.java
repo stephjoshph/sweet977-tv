@@ -29,6 +29,8 @@ import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.text.InputType;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -79,8 +81,9 @@ public class MainActivity extends Activity {
         hideBars();
         store = new Store(this);
         makeWeb();
-        web.loadUrl(Config.START);
+        web.loadUrl(Site.start(MainActivity.this));
         ui.postDelayed(watch, WATCH_MS);
+        checkSite();
         ui.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -136,7 +139,7 @@ public class MainActivity extends Activity {
         @Override
         public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
             String h = request.getUrl().getHost();
-            return h == null || !h.equalsIgnoreCase(Uri.parse(Config.SITE).getHost()); // stay on the website
+            return h == null || !h.equalsIgnoreCase(Site.host(MainActivity.this)); // stay on the website
         }
 
         @Override
@@ -172,7 +175,7 @@ public class MainActivity extends Activity {
             root.removeView(web);
             web.destroy();
             makeWeb();
-            web.loadUrl(Config.START);
+            web.loadUrl(Site.start(MainActivity.this));
             return true;
         }
     }
@@ -184,18 +187,47 @@ public class MainActivity extends Activity {
     private boolean strayed(String url) {
         Uri u = Uri.parse(url);
         String host = u.getHost(), path = u.getPath() == null ? "/" : u.getPath();
-        if (host == null || !host.equalsIgnoreCase(Uri.parse(Config.SITE).getHost()) || path.matches("^/led/?$")) return false;
+        if (host == null || !host.equalsIgnoreCase(Site.host(this)) || path.matches(".*/led/?$")) return false;
         long now = SystemClock.elapsedRealtime();
         if (now - strayAt > 120_000) strays = 0;
         strayAt = now;
         if (++strays > 3) return false;
-        web.loadUrl(Config.START);
+        web.loadUrl(Site.start(MainActivity.this));
         return true;
+    }
+
+    private long siteCheckedAt = 0;
+
+    /** Looks at site.txt on GitHub; if the website moved, goes there. */
+    private void checkSite() {
+        siteCheckedAt = System.currentTimeMillis();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final String moved = Site.checkRemote(MainActivity.this);
+                if (moved != null) ui.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        moveTo(moved);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void moveTo(String site) {
+        Site.set(this, site);
+        store.setHost(Uri.parse(site).getHost());
+        loaded = false;
+        cover.setText(getString(R.string.app_name) + "\n\nConnecting to " + Uri.parse(site).getHost() + "…");
+        cover.setVisibility(View.VISIBLE);
+        web.loadUrl(Site.start(this));
     }
 
     /** No internet and no saved copy yet: say so, and try again shortly. */
     private void offline() {
         failed = true;
+        if (System.currentTimeMillis() - siteCheckedAt > 10 * 60_000) checkSite(); // maybe the website moved
         cover.setText(getString(R.string.app_name) + "\n\nWaiting for the internet…\nThe LED screen starts as soon as the website can be reached.");
         cover.setVisibility(View.VISIBLE);
         ui.removeCallbacks(retry);
@@ -205,7 +237,7 @@ public class MainActivity extends Activity {
     private final Runnable retry = new Runnable() {
         @Override
         public void run() {
-            web.loadUrl(Config.START);
+            web.loadUrl(Site.start(MainActivity.this));
         }
     };
 
@@ -221,10 +253,11 @@ public class MainActivity extends Activity {
             Calendar cal = Calendar.getInstance();
             if (cal.get(Calendar.HOUR_OF_DAY) == 4 && System.currentTimeMillis() - lastDaily > 20L * 3600 * 1000) {
                 lastDaily = System.currentTimeMillis();
-                if (lastDaily - startedAt > 3600_000) web.loadUrl(Config.START); // not right after starting
+                if (lastDaily - startedAt > 3600_000) web.loadUrl(Site.start(MainActivity.this)); // not right after starting
             }
             if (System.currentTimeMillis() - lastUpdateCheck > 24L * 3600 * 1000) {
                 lastUpdateCheck = System.currentTimeMillis();
+                checkSite();
                 new Thread(new Runnable() {
                     @Override
                     public void run() {
@@ -264,6 +297,7 @@ public class MainActivity extends Activity {
                 "Open when the TV turns on: " + (auto ? "ON" : "OFF"),
                 ready > Updater.current(this) ? "Install the new app version (1.0." + ready + ")" : "Check for an app update",
                 "Clear saved files (" + (store.size() / (1024 * 1024)) + " MB)",
+                "Website address: " + Site.host(this),
                 "About",
                 "Close the LED screen"};
         new AlertDialog.Builder(this)
@@ -273,7 +307,7 @@ public class MainActivity extends Activity {
                     public void onClick(DialogInterface d, int which) {
                         switch (which) {
                             case 0:
-                                web.loadUrl(Config.START);
+                                web.loadUrl(Site.start(MainActivity.this));
                                 break;
                             case 1:
                                 prefs.edit().putBoolean(AUTOSTART, !auto).apply();
@@ -286,10 +320,13 @@ public class MainActivity extends Activity {
                             case 3:
                                 store.clear();
                                 web.clearCache(true);
-                                web.loadUrl(Config.START);
+                                web.loadUrl(Site.start(MainActivity.this));
                                 Toast.makeText(MainActivity.this, "Cleared. The LED screen downloads its files again.", Toast.LENGTH_LONG).show();
                                 break;
                             case 4:
+                                askSite();
+                                break;
+                            case 5:
                                 about();
                                 break;
                             default:
@@ -298,6 +335,37 @@ public class MainActivity extends Activity {
                     }
                 })
                 .setNegativeButton("Back", null)
+                .show();
+    }
+
+    /** Type the website address with the remote (only needed if site.txt can't be reached). */
+    private void askSite() {
+        final EditText in = new EditText(this);
+        in.setSingleLine(true);
+        in.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        in.setText(Site.get(this));
+        new AlertDialog.Builder(this)
+                .setTitle("Website address")
+                .setMessage("Normally this changes by itself when the website moves. Type it here only if it didn't.")
+                .setView(in)
+                .setPositiveButton("Save", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int w) {
+                        String site = Site.clean(in.getText().toString());
+                        if (site == null) {
+                            Toast.makeText(MainActivity.this, "That isn't a website address. Example: sweet977.com", Toast.LENGTH_LONG).show();
+                            return;
+                        }
+                        moveTo(site);
+                    }
+                })
+                .setNeutralButton("Use the original", new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(DialogInterface d, int w) {
+                        moveTo(Config.SITE);
+                    }
+                })
+                .setNegativeButton("Cancel", null)
                 .show();
     }
 
@@ -329,7 +397,7 @@ public class MainActivity extends Activity {
 
     private void about() {
         String msg = "Version " + Updater.currentName(this)
-                + "\nWebsite: " + Config.SITE
+                + "\nWebsite: " + Site.get(this)
                 + "\nInternet: " + (store.online ? "connected" : "not reachable (showing the saved screen)")
                 + "\nSaved on this TV: " + (store.size() / (1024 * 1024)) + " MB"
                 + "\nOpens when the TV turns on: " + (prefs.getBoolean(AUTOSTART, true) ? "yes" : "no")

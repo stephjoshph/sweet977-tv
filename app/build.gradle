@@ -1,0 +1,49 @@
+plugins {
+    id 'com.android.application'
+}
+
+// The build number from GitHub becomes the app version, so every build can update the one before it.
+def buildNo = (project.findProperty('versionCode') ?: '1').toString().toInteger()
+
+android {
+    namespace 'fm.sweet977.tv'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'fm.sweet977.tv'
+        minSdk 21
+        targetSdk 34
+        versionCode buildNo
+        versionName "1.0.${buildNo}"
+    }
+
+    signingConfigs {
+        release {
+            def ks = System.getenv('TV_KEYSTORE')
+            if (ks) {
+                storeFile file(ks)
+                storeType 'pkcs12'
+                storePassword System.getenv('TV_KEY_PASS')
+                keyAlias 'sweettv'
+                keyPassword System.getenv('TV_KEY_PASS')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}

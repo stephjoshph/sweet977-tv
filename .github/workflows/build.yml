@@ -1,0 +1,55 @@
+# Builds the Sweet 97.7 LED app for Android TV and publishes it as a GitHub release.
+# Runs on every change to the main branch, or by hand from the Actions tab ("Run workflow").
+# Needs one repository secret, TV_SIGNING (Settings > Secrets and variables > Actions), so every
+# version is signed with the same key and installs over the one before it.
+name: Build TV app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Signing key
+        env:
+          TV_SIGNING: ${{ secrets.TV_SIGNING }}
+        run: |
+          if [ -z "$TV_SIGNING" ]; then
+            echo "::error::Add the TV_SIGNING secret first: Settings > Secrets and variables > Actions > New repository secret."
+            exit 1
+          fi
+          pass="${TV_SIGNING%%:*}"
+          echo "::add-mask::$pass"
+          printf '%s' "${TV_SIGNING#*:}" | base64 -d > "$RUNNER_TEMP/tv.p12"
+          echo "TV_KEYSTORE=$RUNNER_TEMP/tv.p12" >> "$GITHUB_ENV"
+          echo "TV_KEY_PASS=$pass" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: gradle :app:assembleRelease -PversionCode=${{ github.run_number }} --no-daemon --stacktrace
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp app/build/outputs/apk/release/app-release.apk sweet977-tv.apk
+          gh release create "v${{ github.run_number }}" sweet977-tv.apk \
+            --title "Sweet 97.7 LED · version 1.0.${{ github.run_number }}" \
+            --notes "Install on the TV with the Downloader app: https://github.com/${{ github.repository }}/releases/latest/download/sweet977-tv.apk" \
+            --latest

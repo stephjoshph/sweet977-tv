@@ -219,6 +219,25 @@ final class Store {
         }
     }
 
+    /** Whether a file the LED page will need is saved on the TV (files this app doesn't keep count as ready). */
+    boolean has(String url) {
+        try {
+            Uri u = Uri.parse(url);
+            String h = u.getHost();
+            if (h == null) return true;
+            String path = u.getPath() == null ? "/" : u.getPath();
+            if (!keepable(h.equalsIgnoreCase(host), h, path)) return true;
+            return fileFor(url).exists();
+        } catch (Exception e) {
+            return true;
+        }
+    }
+
+    /** The LED page asks for a file to be saved now (before it unlocks, or quietly during the day). */
+    void keep(String url) {
+        if (!has(url)) later(url);
+    }
+
     /** Saves a file in the background, one at a time, so playback is never held up. */
     private void later(final String url) {
         if (!queued.add(url)) return;

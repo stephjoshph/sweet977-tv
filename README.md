@@ -4,6 +4,8 @@ Shows the website's LED screen (`https://sweet977.freehosting.dev/#led`) full sc
 
 - **Opens by itself** when the TV turns on (on Android 10 and later this needs "Display over other apps", which the app asks for once).
 - **Made for slow internet**: the page, its code, fonts, pictures and videos are saved on the TV the first time they are used and loaded from the TV after that. Only the small live updates come over the internet.
+- **Updating screen at start**: the station logo, *Updating* and a progress bar stay up until every file the LED screen uses (pictures, logo, videos, fonts) is confirmed saved on the TV, so nothing loads in the middle of a live show. New pictures added later download quietly and appear once saved.
+- **Lock screen**: when the Studio presses *Lock LED*, the wall shows only the station logo.
 - **Never blanks**: if the internet drops, the last screen keeps running and catches up when the connection returns.
 - **Looks after itself**: reloads a frozen page, restarts if the page engine crashes, refreshes once a night at 4 AM.
 - **Updates**: checks this project's releases once a day and downloads a newer version quietly. Nothing pops up on the LED wall; it installs when someone presses OK on the remote and picks *Install the new app version*.

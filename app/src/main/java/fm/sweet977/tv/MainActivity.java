@@ -32,6 +32,9 @@ import android.webkit.WebViewClient;
 import android.text.InputType;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -50,7 +53,10 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private FrameLayout root;
     private WebView web;
-    private TextView cover;
+    private LinearLayout cover;       // logo, Updating and a progress bar, until the LED page says every file is saved
+    private TextView coverText, coverSub;
+    private ProgressBar coverBar;
+    private volatile boolean pageCtl = false; // the LED page reports its own progress (newer websites)
     private Store store;
     private SharedPreferences prefs;
     private volatile long lastBeat = 0;
@@ -68,14 +74,35 @@ public class MainActivity extends Activity {
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON | WindowManager.LayoutParams.FLAG_FULLSCREEN);
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
-        cover = new TextView(this);
-        cover.setBackgroundColor(Color.BLACK);
-        cover.setTextColor(Color.WHITE);
-        cover.setTextSize(28);
-        cover.setTypeface(Typeface.DEFAULT_BOLD);
+        cover = new LinearLayout(this);
+        cover.setOrientation(LinearLayout.VERTICAL);
         cover.setGravity(Gravity.CENTER);
-        cover.setLineSpacing(0, 1.3f);
-        cover.setText(getString(R.string.app_name) + "\n\nStarting…");
+        cover.setBackgroundColor(Color.rgb(7, 4, 5));
+        ImageView logo = new ImageView(this);
+        logo.setImageResource(R.drawable.logo);
+        logo.setAdjustViewBounds(true);
+        int px = (int) (getResources().getDisplayMetrics().density * 150);
+        cover.addView(logo, new LinearLayout.LayoutParams(px, px));
+        coverText = new TextView(this);
+        coverText.setTextColor(Color.WHITE);
+        coverText.setTextSize(30);
+        coverText.setTypeface(Typeface.DEFAULT_BOLD);
+        coverText.setGravity(Gravity.CENTER);
+        coverText.setPadding(0, px / 6, 0, px / 8);
+        cover.addView(coverText, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        coverBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        coverBar.setMax(100);
+        coverBar.setIndeterminate(false);
+        if (Build.VERSION.SDK_INT >= 21) coverBar.setProgressTintList(android.content.res.ColorStateList.valueOf(Color.rgb(255, 22, 34)));
+        cover.addView(coverBar, new LinearLayout.LayoutParams(px * 3, (int) (getResources().getDisplayMetrics().density * 10)));
+        coverSub = new TextView(this);
+        coverSub.setTextColor(Color.argb(190, 255, 255, 255));
+        coverSub.setTextSize(16);
+        coverSub.setGravity(Gravity.CENTER);
+        coverSub.setLineSpacing(0, 1.2f);
+        coverSub.setPadding(0, px / 8, 0, 0);
+        cover.addView(coverSub, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        setCover("Updating", "Starting…", 2);
         root.addView(cover, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(root);
         hideBars();
@@ -118,11 +145,79 @@ public class MainActivity extends Activity {
         lastBeat = SystemClock.elapsedRealtime();
     }
 
-    /** The page says it is alive every 10 s; a page that stops saying so is reloaded. */
+    private void setCover(String title, String sub, int pct) {
+        coverText.setText(title);
+        coverSub.setText(sub == null ? "" : sub);
+        if (pct >= 0) coverBar.setProgress(pct);
+        cover.setVisibility(View.VISIBLE);
+    }
+
+    private final Runnable hideCover = new Runnable() {
+        @Override
+        public void run() {
+            cover.setVisibility(View.GONE);
+        }
+    };
+
+    /** An older website that doesn't report its progress: show the screen once it has loaded. */
+    private final Runnable hideIfQuiet = new Runnable() {
+        @Override
+        public void run() {
+            if (!pageCtl && loaded && !failed) cover.setVisibility(View.GONE);
+        }
+    };
+
+    /** The page says it is alive every 10 s; a page that stops saying so is reloaded.
+     *  It also reports, while it starts, how much of what it needs is saved on the TV, and says when everything is ready. */
     final class Bridge {
         @JavascriptInterface
         public void beat() {
             lastBeat = SystemClock.elapsedRealtime();
+        }
+
+        @JavascriptInterface
+        public void hello() {
+            pageCtl = true;
+            ui.post(new Runnable() {
+                @Override
+                public void run() {
+                    ui.removeCallbacks(hideIfQuiet);
+                    ui.removeCallbacks(hideCover);
+                    ui.postDelayed(hideCover, 15 * 60_000); // never stuck: the page's own screen takes over
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void progress(final int pct) {
+            ui.post(new Runnable() {
+                @Override
+                public void run() {
+                    if (cover.getVisibility() == View.VISIBLE) setCover("Updating", "Saving the LED screen's files on this TV…", Math.max(0, Math.min(100, pct)));
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void ready() {
+            ui.post(new Runnable() {
+                @Override
+                public void run() {
+                    ui.removeCallbacks(hideCover);
+                    coverBar.setProgress(100);
+                    cover.setVisibility(View.GONE);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public boolean has(String url) {
+            return store.has(url);
+        }
+
+        @JavascriptInterface
+        public void keep(String url) {
+            store.keep(url);
         }
     }
 
@@ -145,6 +240,7 @@ public class MainActivity extends Activity {
         @Override
         public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
             failed = false;
+            pageCtl = false;
         }
 
         @Override
@@ -154,7 +250,8 @@ public class MainActivity extends Activity {
             if (!failed) {
                 loaded = true;
                 lastBeat = SystemClock.elapsedRealtime();
-                cover.setVisibility(View.GONE);
+                ui.removeCallbacks(hideIfQuiet);
+                ui.postDelayed(hideIfQuiet, 12_000);
             }
         }
 
@@ -219,8 +316,7 @@ public class MainActivity extends Activity {
         Site.set(this, site);
         store.setHost(Uri.parse(site).getHost());
         loaded = false;
-        cover.setText(getString(R.string.app_name) + "\n\nConnecting to " + Uri.parse(site).getHost() + "…");
-        cover.setVisibility(View.VISIBLE);
+        setCover("Updating", "Connecting to " + Uri.parse(site).getHost() + "…", 2);
         web.loadUrl(Site.start(this));
     }
 
@@ -228,8 +324,7 @@ public class MainActivity extends Activity {
     private void offline() {
         failed = true;
         if (System.currentTimeMillis() - siteCheckedAt > 10 * 60_000) checkSite(); // maybe the website moved
-        cover.setText(getString(R.string.app_name) + "\n\nWaiting for the internet…\nThe LED screen starts as soon as the website can be reached.");
-        cover.setVisibility(View.VISIBLE);
+        setCover("Waiting for the internet", "The LED screen starts as soon as the website can be reached.", -1);
         ui.removeCallbacks(retry);
         ui.postDelayed(retry, 20_000);
     }

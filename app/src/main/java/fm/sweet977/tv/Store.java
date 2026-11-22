@@ -341,6 +341,32 @@ final class Store {
         if (all != null) for (File f : all) if (!f.equals(page)) f.delete();
     }
 
+    /** Saves one picture to a fixed place (the station logo for the Updating screen). */
+    boolean saveTo(String url, File f) {
+        HttpURLConnection c = null;
+        File tmp = new File(f.getPath() + ".part");
+        try {
+            c = open(url, 15000, 30000);
+            if (c.getResponseCode() != 200) return false;
+            String type = c.getContentType() == null ? "" : c.getContentType().toLowerCase();
+            if (!type.startsWith("image/")) return false;
+            InputStream in = c.getInputStream();
+            OutputStream out = new FileOutputStream(tmp);
+            byte[] buf = new byte[32 * 1024];
+            long total = 0;
+            int n;
+            try {
+                while ((n = in.read(buf)) > 0) { out.write(buf, 0, n); total += n; if (total > 8L * 1024 * 1024) return false; }
+            } finally { out.close(); in.close(); }
+            return tmp.renameTo(f);
+        } catch (IOException e) {
+            return false;
+        } finally {
+            if (c != null) c.disconnect();
+            tmp.delete();
+        }
+    }
+
     long free() { return dir.getUsableSpace(); }
     long total() { return dir.getTotalSpace(); }
 

@@ -38,6 +38,7 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.File;
 import java.util.Calendar;
 
 /**
@@ -55,6 +56,7 @@ public class MainActivity extends Activity {
     private WebView web;
     private LinearLayout cover;       // logo, Updating and a progress bar, until the LED page says every file is saved
     private TextView coverText, coverSub;
+    private ImageView coverLogo;
     private ProgressBar coverBar;
     private volatile boolean pageCtl = false; // the LED page reports its own progress (newer websites)
     private Store store;
@@ -79,7 +81,8 @@ public class MainActivity extends Activity {
         cover.setGravity(Gravity.CENTER);
         cover.setBackgroundColor(Color.rgb(7, 4, 5));
         ImageView logo = new ImageView(this);
-        logo.setImageResource(R.drawable.logo);
+        coverLogo = logo;
+        showBrandLogo(); // the station's own logo, saved the last time the LED page ran (the app's logo until then)
         logo.setAdjustViewBounds(true);
         int px = (int) (getResources().getDisplayMetrics().density * 150);
         cover.addView(logo, new LinearLayout.LayoutParams(px, px));
@@ -143,6 +146,14 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new Client());
         root.addView(web, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         lastBeat = SystemClock.elapsedRealtime();
+    }
+
+    private File brandFile() { return new File(getFilesDir(), "brand-logo"); }
+
+    private void showBrandLogo() {
+        File f = brandFile();
+        android.graphics.Bitmap b = f.exists() ? android.graphics.BitmapFactory.decodeFile(f.getPath()) : null;
+        if (b != null) coverLogo.setImageBitmap(b); else coverLogo.setImageResource(R.drawable.logo);
     }
 
     private void setCover(String title, String sub, int pct) {
@@ -235,6 +246,32 @@ public class MainActivity extends Activity {
             return "{\"id\":\"" + id + "\",\"name\":" + js(name) + ",\"model\":" + js(Build.MANUFACTURER + " " + Build.MODEL) + ",\"android\":" + js(Build.VERSION.RELEASE)
                 + ",\"sdk\":" + Build.VERSION.SDK_INT + ",\"app\":" + js(Updater.currentName(MainActivity.this)) + ",\"screen\":\"" + dm.widthPixels + "x" + dm.heightPixels + "\""
                 + ",\"ram\":" + mi.totalMem + ",\"ramFree\":" + mi.availMem + ",\"disk\":" + store.total() + ",\"diskFree\":" + store.free() + ",\"saved\":" + store.size() + "}";
+        }
+
+        /** The LED page passes the station logo; it is saved for the Updating screen (an address, or the picture itself). */
+        @JavascriptInterface
+        public void brandLogo(final String src) {
+            if (src == null || src.isEmpty()) return;
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    boolean ok = false;
+                    try {
+                        if (src.startsWith("data:image/")) {
+                            int i = src.indexOf("base64,");
+                            if (i > 0) {
+                                byte[] b = android.util.Base64.decode(src.substring(i + 7), android.util.Base64.DEFAULT);
+                                java.io.FileOutputStream o = new java.io.FileOutputStream(brandFile());
+                                try { o.write(b); } finally { o.close(); }
+                                ok = true;
+                            }
+                        } else if (src.startsWith("http")) {
+                            ok = store.saveTo(src, brandFile());
+                        }
+                    } catch (Exception ignored) { }
+                    if (ok) ui.post(new Runnable() { @Override public void run() { showBrandLogo(); } });
+                }
+            }).start();
         }
 
         @JavascriptInterface

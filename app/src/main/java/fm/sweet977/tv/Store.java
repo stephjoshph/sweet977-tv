@@ -207,7 +207,7 @@ final class Store {
                 in.close();
             }
             if (len >= 0 && total != len) return false; // cut off part way
-            write(new File(f.getPath() + ".m"), (mime + "\n" + charset).getBytes("UTF-8"));
+            write(new File(f.getPath() + ".m"), (mime + "\n" + charset + "\n" + url).getBytes("UTF-8")); // the address is kept so the Studio can list the files
             if (!tmp.renameTo(f)) return false;
             online = true;
             return true;
@@ -300,6 +300,58 @@ final class Store {
     void clear() {
         File[] all = dir.listFiles();
         if (all != null) for (File f : all) f.delete();
+    }
+
+    /** The saved files, for the Studio (developer): name, address, size, type and when it was last used. */
+    String listJson() {
+        StringBuilder b = new StringBuilder("[");
+        File[] all = dir.listFiles();
+        if (all != null) for (File f : all) {
+            String n = f.getName();
+            if (n.endsWith(".m") || n.contains(".part") || !f.isFile()) continue;
+            String url = "", mime = "";
+            File meta = new File(f.getPath() + ".m");
+            try {
+                if (meta.exists()) {
+                    String[] m = new String(readAll(new FileInputStream(meta)), "UTF-8").split("\n", -1);
+                    if (m.length > 0) mime = m[0];
+                    if (m.length > 2) url = m[2];
+                }
+            } catch (IOException ignored) { }
+            if (f.equals(page)) url = "(the LED page)";
+            if (b.length() > 1) b.append(',');
+            b.append("{\"n\":").append(q(n)).append(",\"u\":").append(q(url)).append(",\"t\":").append(q(mime))
+             .append(",\"s\":").append(f.length()).append(",\"l\":").append(f.lastModified()).append('}');
+        }
+        return b.append(']').toString();
+    }
+
+    /** Deletes one saved file (the Studio asked); the LED page itself is never deleted. */
+    boolean delName(String name) {
+        if (name == null || !name.matches("[0-9a-f]{8,40}")) return false;
+        File f = new File(dir, name);
+        if (f.equals(page)) return false;
+        new File(f.getPath() + ".m").delete();
+        return f.delete();
+    }
+
+    /** Deletes every saved file except the LED page (the Studio asked). */
+    void clearFiles() {
+        File[] all = dir.listFiles();
+        if (all != null) for (File f : all) if (!f.equals(page)) f.delete();
+    }
+
+    long free() { return dir.getUsableSpace(); }
+    long total() { return dir.getTotalSpace(); }
+
+    private static String q(String s) {
+        StringBuilder b = new StringBuilder("\"");
+        for (char c : s.toCharArray()) {
+            if (c == '"' || c == '\\') b.append('\\').append(c);
+            else if (c < 0x20) b.append(String.format("\\u%04x", (int) c));
+            else b.append(c);
+        }
+        return b.append('"').toString();
     }
 
     long size() {

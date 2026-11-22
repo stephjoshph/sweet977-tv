@@ -167,6 +167,16 @@ public class MainActivity extends Activity {
         }
     };
 
+    private static String js(String s) {
+        StringBuilder b = new StringBuilder("\"");
+        for (char c : (s == null ? "" : s).toCharArray()) {
+            if (c == '"' || c == '\\') b.append('\\').append(c);
+            else if (c < 0x20) b.append(' ');
+            else b.append(c);
+        }
+        return b.append('"').toString();
+    }
+
     /** The page says it is alive every 10 s; a page that stops saying so is reloaded.
      *  It also reports, while it starts, how much of what it needs is saved on the TV, and says when everything is ready. */
     final class Bridge {
@@ -208,6 +218,38 @@ public class MainActivity extends Activity {
                     cover.setVisibility(View.GONE);
                 }
             });
+        }
+
+        /** This TV, for the Studio (developer): model, Android, app version, screen, memory and storage. */
+        @JavascriptInterface
+        public String info() {
+            String id = prefs.getString("tvId", "");
+            if (id.isEmpty()) { id = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16); prefs.edit().putString("tvId", id).apply(); }
+            android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
+            if (am != null) am.getMemoryInfo(mi);
+            android.util.DisplayMetrics dm = new android.util.DisplayMetrics();
+            getWindowManager().getDefaultDisplay().getRealMetrics(dm);
+            String name = Settings.Global.getString(getContentResolver(), "device_name");
+            if (name == null || name.isEmpty()) name = Build.MODEL;
+            return "{\"id\":\"" + id + "\",\"name\":" + js(name) + ",\"model\":" + js(Build.MANUFACTURER + " " + Build.MODEL) + ",\"android\":" + js(Build.VERSION.RELEASE)
+                + ",\"sdk\":" + Build.VERSION.SDK_INT + ",\"app\":" + js(Updater.currentName(MainActivity.this)) + ",\"screen\":\"" + dm.widthPixels + "x" + dm.heightPixels + "\""
+                + ",\"ram\":" + mi.totalMem + ",\"ramFree\":" + mi.availMem + ",\"disk\":" + store.total() + ",\"diskFree\":" + store.free() + ",\"saved\":" + store.size() + "}";
+        }
+
+        @JavascriptInterface
+        public String files() {
+            return store.listJson();
+        }
+
+        @JavascriptInterface
+        public boolean del(String name) {
+            return store.delName(name);
+        }
+
+        @JavascriptInterface
+        public void clearAll() {
+            store.clearFiles();
         }
 
         @JavascriptInterface

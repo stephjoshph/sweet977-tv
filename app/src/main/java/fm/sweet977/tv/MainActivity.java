@@ -125,6 +125,13 @@ public class MainActivity extends Activity {
         } catch (Throwable ignored) { }
         makeWeb();
         String crash = lastCrash();
+        if (crash == null && prefs.getBoolean("running", false)) { // closed by the TV (not an error in the app): show how far it got
+            String t = prefs.getString("trail", ""); String[] ls = t.split("\n"); StringBuilder b = new StringBuilder();
+            for (int i = Math.max(0, ls.length - 6); i < ls.length; i++) b.append(ls[i]).append('\n');
+            crash = b.append("Android ").append(Build.VERSION.RELEASE).append(" · web engine ").append(chromeV).append(" · app ").append(Updater.currentName(this)).append(Site.lite ? " · light" : "").toString();
+        }
+        prefs.edit().putBoolean("running", false).putString("trail", "").apply();
+        step("app started");
         if (crash != null) { // the app closed by itself last time: show why for 30 s (a photo of it helps fix it), then go on
             setCover("The app closed last time", crash, 0);
             ui.postDelayed(new Runnable() { @Override public void run() { setCover("Updating", "Starting…", 2); web.loadUrl(Site.start(MainActivity.this)); } }, 30_000);
@@ -160,7 +167,11 @@ public class MainActivity extends Activity {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
         web.addJavascriptInterface(new Bridge(), "SweetTVApp");
-        web.setWebChromeClient(new WebChromeClient());
+        web.setWebChromeClient(new WebChromeClient() {
+            private int lastP = -1;
+            @Override public void onProgressChanged(WebView v, int p) { if (p / 25 != lastP / 25) { lastP = p; step("loading " + p + "%"); } }
+            @Override public boolean onConsoleMessage(android.webkit.ConsoleMessage m) { if (m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR) step("page error: " + String.valueOf(m.message()).replace('\n', ' ').substring(0, Math.min(140, String.valueOf(m.message()).length()))); return false; }
+        });
         web.setWebViewClient(new Client());
         root.addView(web, 0, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         lastBeat = SystemClock.elapsedRealtime();
@@ -206,6 +217,19 @@ public class MainActivity extends Activity {
     static final int MIN_CHROME = 69;
     /** The web engine's version (from its user agent), or 0 if unknown. Read once on the main thread: the page's calls come on another thread, where the web view can't be asked. */
     private volatile int chromeV = 0; // set when the web view is made
+    /** How far this run got (shown on the next start if the app was closed by the TV): each step with the time and free memory. */
+    private final StringBuilder trail = new StringBuilder();
+    private long trailT0 = 0;
+    void step(String what) {
+        try {
+            if (trailT0 == 0) trailT0 = SystemClock.elapsedRealtime();
+            android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo(); if (am != null) am.getMemoryInfo(mi);
+            String line = ((SystemClock.elapsedRealtime() - trailT0) / 1000) + "s " + what + " (free " + (mi.availMem >> 20) + " MB)";
+            synchronized (trail) { trail.append(line).append('\n'); if (trail.length() > 900) trail.delete(0, trail.indexOf("\n", trail.length() - 900) + 1); }
+            prefs.edit().putString("trail", trail.toString()).putBoolean("running", true).apply();
+        } catch (Throwable ignored) { }
+    }
     private int chromeVersion() { return chromeV; }
 
     /** If the app closed with an error last time: a short description of it (and the TV's versions), once. */
@@ -233,6 +257,7 @@ public class MainActivity extends Activity {
 
     /** The page says it is alive every 10 s; a page that stops saying so is reloaded.
      *  It also reports, while it starts, how much of what it needs is saved on the TV, and says when everything is ready. */
+    private volatile int lastPct = -100;
     final class Bridge {
         @JavascriptInterface
         public void beat() {
@@ -241,6 +266,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void hello() {
+            step("LED program started");
             pageCtl = true;
             ui.post(new Runnable() {
                 @Override
@@ -254,6 +280,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void progress(final int pct) {
+            if (pct / 20 != lastPct / 20) { lastPct = pct; step("saving files " + pct + "%"); }
             ui.post(new Runnable() {
                 @Override
                 public void run() {
@@ -264,6 +291,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public void ready() {
+            step("LED screen ready");
             ui.post(new Runnable() {
                 @Override
                 public void run() {
@@ -365,12 +393,14 @@ public class MainActivity extends Activity {
 
         @Override
         public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+            step("page opening");
             failed = false;
             pageCtl = false;
         }
 
         @Override
         public void onPageFinished(WebView view, String url) {
+            step("page loaded" + (failed ? " (failed)" : ""));
             if (!failed && strayed(url)) return;
             view.evaluateJavascript(BEAT_JS, null);
             if (!failed) {
@@ -674,6 +704,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (prefs != null && trailT0 != 0) step("back on screen");
         if (web != null) {
             web.onResume();
             web.resumeTimers();
@@ -682,6 +713,7 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onPause() {
+        try { prefs.edit().putBoolean("running", false).apply(); } catch (Throwable ignored) { } // left on purpose, not closed by the TV
         if (web != null) web.onPause(); // another app is on screen: rest
         super.onPause();
     }

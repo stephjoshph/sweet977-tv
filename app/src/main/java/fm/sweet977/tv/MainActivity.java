@@ -72,6 +72,14 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle state) {
         super.onCreate(state);
+        final Thread.UncaughtExceptionHandler was = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() { // keep what went wrong, to show it on the next start
+            @Override public void uncaughtException(Thread t, Throwable e) {
+                try { java.io.StringWriter w = new java.io.StringWriter(); e.printStackTrace(new java.io.PrintWriter(w));
+                    java.io.FileOutputStream o = new java.io.FileOutputStream(new java.io.File(getFilesDir(), "crash.txt")); o.write(w.toString().getBytes("UTF-8")); o.close(); } catch (Throwable ignored) { }
+                if (was != null) was.uncaughtException(t, e);
+            }
+        });
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON | WindowManager.LayoutParams.FLAG_FULLSCREEN);
         root = new FrameLayout(this);
@@ -111,8 +119,11 @@ public class MainActivity extends Activity {
         hideBars();
         store = new Store(this);
         makeWeb();
-        chromeVersion(); // read on the main thread, kept for later
-        web.loadUrl(Site.start(MainActivity.this));
+        String crash = lastCrash();
+        if (crash != null) { // the app closed by itself last time: show why for 30 s (a photo of it helps fix it), then go on
+            setCover("The app closed last time", crash, 0);
+            ui.postDelayed(new Runnable() { @Override public void run() { setCover("Updating", "Starting…", 2); web.loadUrl(Site.start(MainActivity.this)); } }, 30_000);
+        } else web.loadUrl(Site.start(MainActivity.this));
         ui.postDelayed(watch, WATCH_MS);
         checkSite();
         ui.postDelayed(new Runnable() {
@@ -140,6 +151,7 @@ public class MainActivity extends Activity {
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
         s.setUserAgentString(s.getUserAgentString() + " SweetTV/" + Updater.currentName(this));
         store.userAgent = s.getUserAgentString();
+        try { java.util.regex.Matcher m = java.util.regex.Pattern.compile("Chrome/(\\d+)").matcher(store.userAgent); chromeV = m.find() ? Integer.parseInt(m.group(1)) : 0; } catch (Throwable e) { chromeV = 0; }
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
         web.addJavascriptInterface(new Bridge(), "SweetTVApp");
@@ -188,15 +200,20 @@ public class MainActivity extends Activity {
     };
     static final int MIN_CHROME = 69;
     /** The web engine's version (from its user agent), or 0 if unknown. Read once on the main thread: the page's calls come on another thread, where the web view can't be asked. */
-    private volatile int chromeV = -1;
-    private int chromeVersion() {
-        if (chromeV >= 0) return chromeV;
+    private volatile int chromeV = 0; // set when the web view is made
+    private int chromeVersion() { return chromeV; }
+
+    /** If the app closed with an error last time: a short description of it (and the TV's versions), once. */
+    private String lastCrash() {
+        java.io.File f = new java.io.File(getFilesDir(), "crash.txt");
+        if (!f.exists()) return null;
         try {
-            String ua = android.webkit.WebSettings.getDefaultUserAgent(this);
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("Chrome/(\\d+)").matcher(ua == null ? "" : ua);
-            chromeV = m.find() ? Integer.parseInt(m.group(1)) : 0;
-        } catch (Throwable e) { chromeV = 0; }
-        return chromeV;
+            String t = new String(Store.readAll(new java.io.FileInputStream(f)), "UTF-8");
+            f.delete();
+            String[] lines = t.split("\n"); StringBuilder b = new StringBuilder();
+            for (int i = 0; i < lines.length && i < 4; i++) b.append(lines[i].trim()).append('\n');
+            return b.append("Android ").append(Build.VERSION.RELEASE).append(" · web engine ").append(chromeV).append(" · app ").append(Updater.currentName(this)).toString();
+        } catch (Exception e) { f.delete(); return null; }
     }
 
     private static String js(String s) {

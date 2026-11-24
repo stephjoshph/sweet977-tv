@@ -9,6 +9,19 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
+import android.graphics.Canvas;
+import android.graphics.LinearGradient;
+import android.graphics.Paint;
+import android.graphics.RadialGradient;
+import android.graphics.Shader;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.LayerDrawable;
+import android.graphics.drawable.Drawable;
+import android.view.animation.DecelerateInterpolator;
+import android.view.animation.LinearInterpolator;
+import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
+import android.animation.AnimatorSet;
 import android.graphics.drawable.GradientDrawable;
 import android.media.MediaPlayer;
 import android.net.Uri;
@@ -63,30 +76,46 @@ import java.util.concurrent.Executors;
  */
 public class LedActivity extends Activity {
     static final String PREFS = MainActivity.PREFS, AUTOSTART = MainActivity.AUTOSTART;
-    private static final long FEED_MS = 15_000, REPORT_MS = 5 * 60_000;
+    private static final long POLL_MS = 1000, REPORT_MS = 5 * 60_000;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService net = Executors.newSingleThreadExecutor(), img = Executors.newSingleThreadExecutor();
     private SharedPreferences prefs;
     private FrameLayout root, stage;
     private LinearLayout cover, card, rows;
-    private TextView coverTitle, coverSub, big1, big2, clock, eye, title, sub;
-    private ImageView coverLogo, logo, pic, lockLogo;
+    private TextView coverTitle, coverSub, big1, big2, eye, title, sub;
+    private ImageView coverLogo, pic, lockLogo, bgPic;
     private ProgressBar coverBar;
-    private View[] glows = new View[3];
-    private View lockView, blackView;
+    private final Glow[] glows = new Glow[3];
+    private View lockView, blackView, grain, vignette;
     private VideoView video;
     private Typeface anton, bold, semi;
-    private float k = 1; // the screen's size against a 1920-wide design
+    private float k = 1; // the screen's size against the 1920 × 1080 design the website uses
 
-    private JSONObject feed;            // the newest content from the website
+    private JSONObject feed;
+    private String feedH = "";
     private List<JSONObject> items = new ArrayList<>();
     private int idx = -1;
     private long slideEnds = 0;
-    private String shownLogo = "", shownVideo = "";
-    private long backAt = 0, lastFeedOk = 0;
+    private String shownLogo = "", shownVideo = "", shownBg = "";
+    private boolean started = false;
+    private long backAt = 0, lastFeedOk = 0, lastFull = 0;
     private final Map<String, Bitmap> pics = new HashMap<>();
     private final java.util.Set<String> loading = java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+    private int acc = Color.rgb(255, 22, 34), ink = Color.WHITE;
+    private AnimatorSet push;
+
+    /** A soft colour glow: a radial fade (what the website draws with a 140 px blur, without its cost). */
+    static final class Glow extends View {
+        int color = Color.RED;
+        Glow(android.content.Context c) { super(c); }
+        @Override protected void onDraw(Canvas cv) {
+            float r = Math.min(getWidth(), getHeight()) / 2f; if (r <= 0) return;
+            Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+            p.setShader(new RadialGradient(getWidth() / 2f, getHeight() / 2f, r, new int[]{color, alpha(color, (int) (Color.alpha(color) * 0.55f)), alpha(color, 0)}, new float[]{0f, 0.55f, 1f}, Shader.TileMode.CLAMP));
+            cv.drawCircle(getWidth() / 2f, getHeight() / 2f, r, p);
+        }
+    }
 
     @Override
     protected void onCreate(Bundle state) {
@@ -96,8 +125,8 @@ public class LedActivity extends Activity {
         try { anton = Typeface.createFromAsset(getAssets(), "fonts/Anton.ttf"); } catch (Throwable e) { anton = Typeface.DEFAULT_BOLD; }
         try { bold = Typeface.createFromAsset(getAssets(), "fonts/Inter-Bold.ttf"); } catch (Throwable e) { bold = Typeface.DEFAULT_BOLD; }
         try { semi = Typeface.createFromAsset(getAssets(), "fonts/Inter-SemiBold.ttf"); } catch (Throwable e) { semi = Typeface.DEFAULT; }
-        int w = Math.max(getResources().getDisplayMetrics().widthPixels, getResources().getDisplayMetrics().heightPixels);
-        k = w / 1920f;
+        android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+        k = Math.min(Math.max(dm.widthPixels, dm.heightPixels) / 1920f, Math.min(dm.widthPixels, dm.heightPixels) / 1080f);
         build();
         setContentView(root);
         hideBars();
@@ -111,55 +140,52 @@ public class LedActivity extends Activity {
 
     private float px(float v) { return v * k; }
     private void size(TextView t, float v) { t.setTextSize(TypedValue.COMPLEX_UNIT_PX, px(v)); }
-    private static int alpha(int c, int a) { return Color.argb(a, Color.red(c), Color.green(c), Color.blue(c)); }
-    private static int col(JSONObject o, String key, int def) { try { return Color.parseColor(o.optString(key)); } catch (Throwable e) { return def; } }
+    static int alpha(int c, int a) { return Color.argb(Math.max(0, Math.min(255, a)), Color.red(c), Color.green(c), Color.blue(c)); }
+    private static int col(JSONObject o, String key, int def) { try { String v = o.optString(key); return v.isEmpty() ? def : Color.parseColor(v); } catch (Throwable e) { return def; } }
+    private FrameLayout.LayoutParams at(float x, float y, float w, float h) { FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams((int) px(w), (int) px(h)); lp.leftMargin = (int) px(x); lp.topMargin = (int) px(y); return lp; }
 
-    /* ── the screen's parts ── */
+    /* ── the Glass look, laid out like the website's LED page (1920 × 1080) ── */
     private void build() {
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
         stage = new FrameLayout(this);
-        root.addView(stage, new FrameLayout.LayoutParams(-1, -1));
+        stage.setClipChildren(true);
+        FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams((int) px(1920), (int) px(1080), Gravity.CENTER);
+        root.addView(stage, sl);
 
-        for (int i = 0; i < 3; i++) { // soft colour glows, drifting slowly (a gradient: cheap for small TVs)
-            View g = new View(this);
-            int s = (int) px(i == 1 ? 1100 : 1300);
-            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(s, s);
-            lp.leftMargin = (int) px(new int[]{-380, 1100, 300}[i]); lp.topMargin = (int) px(new int[]{-420, -300, 420}[i]);
-            stage.addView(g, lp);
-            glows[i] = g;
-            g.animate().translationX(px(i == 1 ? -160 : 160)).translationY(px(i == 2 ? -120 : 120)).setDuration(18_000 + i * 6000).withEndAction(drift(g, i)).start();
-        }
+        float[][] g = {{-332, 255, 1227}, {1144, -365, 1013}, {446, 416, 873}};
+        for (int i = 0; i < 3; i++) { glows[i] = new Glow(this); stage.addView(glows[i], at(g[i][0], g[i][1], g[i][2], g[i][2])); }
 
-        big1 = text(anton, 760, Color.WHITE); // the giant "97.7" behind everything
-        big1.setIncludeFontPadding(false); big1.setSingleLine(true);
-        FrameLayout.LayoutParams b1 = new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER_VERTICAL | Gravity.START); b1.leftMargin = (int) px(60);
+        bgPic = new ImageView(this); bgPic.setScaleType(ImageView.ScaleType.FIT_CENTER); bgPic.setVisibility(View.GONE);
+        stage.addView(bgPic, new FrameLayout.LayoutParams((int) px(1600), (int) px(900)));
+        big1 = text(anton, 760, Color.WHITE); big1.setSingleLine(true); big1.setLetterSpacing(-0.01f); big1.setAllCaps(true);
+        FrameLayout.LayoutParams b1 = new FrameLayout.LayoutParams(-2, -2); b1.leftMargin = (int) px(24); b1.topMargin = (int) px(-60);
         stage.addView(big1, b1);
-        big2 = text(anton, 300, Color.WHITE);
-        FrameLayout.LayoutParams b2 = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL); b2.bottomMargin = (int) px(-60);
+        big2 = text(anton, 300, Color.argb(18, 255, 255, 255)); big2.setSingleLine(true); big2.setAllCaps(true); big2.setLetterSpacing(0.01f);
+        FrameLayout.LayoutParams b2 = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL); b2.bottomMargin = (int) px(-70);
         stage.addView(big2, b2);
 
-        logo = new ImageView(this); logo.setScaleType(ImageView.ScaleType.FIT_START); logo.setAdjustViewBounds(true);
-        FrameLayout.LayoutParams lg = new FrameLayout.LayoutParams((int) px(420), (int) px(130), Gravity.TOP | Gravity.START); lg.leftMargin = (int) px(64); lg.topMargin = (int) px(52);
-        stage.addView(logo, lg);
-        clock = text(bold, 54, Color.WHITE);
-        FrameLayout.LayoutParams ck = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END); ck.rightMargin = (int) px(70); ck.topMargin = (int) px(62);
-        stage.addView(clock, ck);
+        grain = new View(this); stage.addView(grain, new FrameLayout.LayoutParams(-1, -1)); grain.setBackground(noise());
+        vignette = new View(this) { @Override protected void onDraw(Canvas cv) { // dark edges
+            Paint p = new Paint(); p.setShader(new RadialGradient(getWidth() / 2f, getHeight() / 2f, Math.max(getWidth(), getHeight()) * 0.75f, new int[]{0, 0, Color.argb(150, 0, 0, 0)}, new float[]{0f, 0.55f, 1f}, Shader.TileMode.CLAMP));
+            cv.drawRect(0, 0, getWidth(), getHeight(), p); } };
+        stage.addView(vignette, new FrameLayout.LayoutParams(-1, -1));
 
-        card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setGravity(Gravity.CENTER);
-        card.setPadding((int) px(80), (int) px(56), (int) px(80), (int) px(64));
-        FrameLayout.LayoutParams cl = new FrameLayout.LayoutParams((int) px(1340), -2, Gravity.CENTER); cl.topMargin = (int) px(40);
-        stage.addView(card, cl);
-        eye = text(bold, 34, Color.WHITE); eye.setAllCaps(true); eye.setLetterSpacing(0.14f); eye.setPadding((int) px(34), (int) px(12), (int) px(34), (int) px(12));
+        card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setGravity(Gravity.CENTER_HORIZONTAL);
+        card.setPadding((int) px(76), (int) px(56), (int) px(76), (int) px(64));
+        stage.addView(card, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
+        eye = text(bold, 24, Color.WHITE); eye.setAllCaps(true); eye.setLetterSpacing(0.22f); eye.setGravity(Gravity.CENTER_VERTICAL);
+        eye.setPadding((int) px(18), (int) px(11), (int) px(22), (int) px(11)); eye.setCompoundDrawablePadding((int) px(12));
         card.addView(eye, wrap(0));
-        title = text(bold, 150, Color.WHITE); title.setGravity(Gravity.CENTER); title.setMaxLines(3); title.setEllipsize(TextUtils.TruncateAt.END); title.setLineSpacing(0, 0.92f);
-        card.addView(title, wrap(28));
-        pic = new ImageView(this); pic.setScaleType(ImageView.ScaleType.FIT_CENTER); pic.setAdjustViewBounds(true);
-        card.addView(pic, new LinearLayout.LayoutParams((int) px(1100), (int) px(560)));
-        rows = new LinearLayout(this); rows.setOrientation(LinearLayout.VERTICAL);
-        card.addView(rows, new LinearLayout.LayoutParams(-1, -2));
-        sub = text(semi, 44, Color.argb(220, 255, 255, 255)); sub.setGravity(Gravity.CENTER); sub.setMaxLines(2);
+        title = text(anton, 230, Color.WHITE); title.setGravity(Gravity.CENTER); title.setAllCaps(true); title.setLineSpacing(0, 0.86f); title.setMaxWidth((int) px(1560));
+        card.addView(title, wrap(26));
+        pic = new ImageView(this); pic.setScaleType(ImageView.ScaleType.FIT_CENTER); pic.setAdjustViewBounds(true); pic.setVisibility(View.GONE);
+        card.addView(pic, wrap(26));
+        rows = new LinearLayout(this); rows.setOrientation(LinearLayout.VERTICAL); rows.setGravity(Gravity.CENTER_HORIZONTAL);
+        card.addView(rows, wrap(0));
+        sub = text(semi, 40, Color.argb(205, 255, 255, 255)); sub.setGravity(Gravity.CENTER); sub.setMaxLines(2); sub.setMaxWidth((int) px(1500));
         card.addView(sub, wrap(26));
+        card.setVisibility(View.INVISIBLE);
 
         video = new VideoView(this);
         root.addView(video, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
@@ -167,9 +193,9 @@ public class LedActivity extends Activity {
         video.setOnPreparedListener(new MediaPlayer.OnPreparedListener() { @Override public void onPrepared(MediaPlayer mp) { mp.setLooping(true); mp.setVolume(0, 0); } });
         video.setOnErrorListener(new MediaPlayer.OnErrorListener() { @Override public boolean onError(MediaPlayer mp, int a, int b) { shownVideo = ""; video.setVisibility(View.GONE); return true; } });
 
-        LinearLayout lock = new LinearLayout(this); lock.setGravity(Gravity.CENTER); lock.setBackgroundColor(Color.rgb(5, 3, 4));
+        LinearLayout lock = new LinearLayout(this); lock.setGravity(Gravity.CENTER); lock.setBackgroundColor(Color.BLACK);
         lockLogo = new ImageView(this); lockLogo.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        lock.addView(lockLogo, new LinearLayout.LayoutParams((int) px(900), (int) px(500)));
+        lock.addView(lockLogo, new LinearLayout.LayoutParams((int) px(760), (int) px(460)));
         lockView = lock; lockView.setVisibility(View.GONE);
         root.addView(lockView, new FrameLayout.LayoutParams(-1, -1));
         blackView = new View(this); blackView.setBackgroundColor(Color.BLACK); blackView.setVisibility(View.GONE);
@@ -180,22 +206,22 @@ public class LedActivity extends Activity {
         coverLogo.setImageResource(R.drawable.logo);
         File bf = new File(getFilesDir(), "brand-logo");
         if (bf.exists()) { Bitmap b = decode(bf, 600); if (b != null) coverLogo.setImageBitmap(b); }
-        cover.addView(coverLogo, new LinearLayout.LayoutParams((int) px(420), (int) px(300)));
-        coverTitle = text(bold, 56, Color.WHITE); cover.addView(coverTitle, wrap(30));
+        cover.addView(coverLogo, new LinearLayout.LayoutParams((int) px(360), (int) px(260)));
+        coverTitle = text(bold, 52, Color.WHITE); cover.addView(coverTitle, wrap(28));
         coverBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal); coverBar.setMax(100);
         if (Build.VERSION.SDK_INT >= 21) coverBar.setProgressTintList(android.content.res.ColorStateList.valueOf(Color.rgb(255, 22, 34)));
-        cover.addView(coverBar, new LinearLayout.LayoutParams((int) px(640), (int) px(14)));
-        coverSub = text(semi, 30, Color.argb(190, 255, 255, 255)); coverSub.setGravity(Gravity.CENTER);
-        cover.addView(coverSub, wrap(24));
+        cover.addView(coverBar, new LinearLayout.LayoutParams((int) px(620), (int) px(14)));
+        coverSub = text(semi, 28, Color.argb(190, 255, 255, 255)); coverSub.setGravity(Gravity.CENTER);
+        cover.addView(coverSub, wrap(22));
         root.addView(cover, new FrameLayout.LayoutParams(-1, -1));
-        applyColors(Color.rgb(5, 3, 4), Color.rgb(232, 16, 28), Color.rgb(26, 18, 20));
+        applyLook(new JSONObject(), new JSONObject());
     }
 
-    private Runnable drift(final View g, final int i) {
-        return new Runnable() { @Override public void run() {
-            float x = g.getTranslationX() == 0 ? px(i == 1 ? -160 : 160) : 0, y = g.getTranslationY() == 0 ? px(i == 2 ? -120 : 120) : 0;
-            g.animate().translationX(x).translationY(y).setDuration(18_000 + i * 6000).withEndAction(this).start();
-        } };
+    private Drawable noise() { // fine film grain, tiled
+        int n = 192; Bitmap b = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888); java.util.Random r = new java.util.Random(7);
+        int[] px = new int[n * n]; for (int i = 0; i < px.length; i++) { int v = r.nextInt(256); px[i] = Color.argb(r.nextInt(34), v, v, v); }
+        b.setPixels(px, 0, n, 0, 0, n, n);
+        BitmapDrawable d = new BitmapDrawable(getResources(), b); d.setTileModeXY(Shader.TileMode.REPEAT, Shader.TileMode.REPEAT); return d;
     }
 
     private TextView text(Typeface tf, float sizePx, int color) {
@@ -203,40 +229,83 @@ public class LedActivity extends Activity {
     }
     private LinearLayout.LayoutParams wrap(float top) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-2, -2); p.gravity = Gravity.CENTER_HORIZONTAL; p.topMargin = (int) px(top); return p; }
 
-    private int acc = Color.RED;
-    private void applyColors(int bg, int accent, int cardC) {
-        acc = accent;
+    /* ── colours and settings from Studio → LED screen (Glass) ── */
+    private ObjectAnimator sway;
+    private final ObjectAnimator[] drifts = new ObjectAnimator[3];
+    private String lookSig = "";
+    private void applyLook(JSONObject cs, JSONObject lk) {
+        String sig = cs.toString() + lk.toString(); if (sig.equals(lookSig)) return; lookSig = sig;
+        int bg = col(cs, "bg", Color.rgb(7, 4, 5)); acc = col(cs, "acc", Color.rgb(255, 22, 34)); ink = col(cs, "ink", Color.WHITE);
         stage.setBackgroundColor(bg);
-        int[] cs = {accent, alpha(darker(accent), 255), accent};
+        int[] gc = {alpha(acc, 230), alpha(col(cs, "b2", Color.rgb(165, 13, 23)), 217), alpha(col(cs, "b3", Color.rgb(91, 7, 16)), 204)};
+        for (int i = 0; i < 3; i++) { glows[i].color = gc[i]; glows[i].invalidate(); }
+        // the giant words: a red gradient across them (the website's colours)
+        JSONArray bc = cs.optJSONArray("big"); final int[] cols = new int[5]; String[] def = {"#ff2a36", "#ff1b28", "#4a2a2e", "#3a2326", "#8e1a22"};
+        for (int i = 0; i < 5; i++) { try { cols[i] = Color.parseColor(bc != null && i < bc.length() ? bc.optString(i) : def[i]); } catch (Throwable e) { cols[i] = Color.parseColor(def[i]); } }
+        big1.addOnLayoutChangeListener(new View.OnLayoutChangeListener() { @Override public void onLayoutChange(View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
+            big1.getPaint().setShader(new LinearGradient(0, 0, Math.max(1, r - l), (r - l) * 0.087f, cols, new float[]{0f, .26f, .52f, .78f, 1f}, Shader.TileMode.CLAMP)); big1.invalidate(); } });
+        big1.getPaint().setShader(new LinearGradient(0, 0, Math.max(1, big1.getWidth()), 0, cols, new float[]{0f, .26f, .52f, .78f, 1f}, Shader.TileMode.CLAMP));
+        big1.setAlpha(0.92f); big1.invalidate();
+        // the glass card: a light sheen over the card colour, a fine light edge
+        String cardHex = cs.optString("card", "");
+        GradientDrawable base = new GradientDrawable(); base.setCornerRadius(px(56));
+        base.setColor(cardHex.isEmpty() ? Color.argb(110, 30, 6, 10) : alpha(col(cs, "card", Color.rgb(30, 6, 10)), 209));
+        GradientDrawable sheen = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{Color.argb(51, 255, 255, 255), Color.argb(10, 255, 255, 255), Color.argb(18, 255, 255, 255)});
+        sheen.setCornerRadius(px(56)); sheen.setStroke((int) Math.max(1, px(1.6f)), Color.argb(46, 255, 255, 255));
+        card.setBackground(new LayerDrawable(new Drawable[]{base, sheen}));
+        GradientDrawable pill = new GradientDrawable(); pill.setColor(alpha(acc, 230)); pill.setCornerRadius(px(60)); eye.setBackground(pill);
+        GradientDrawable dot = new GradientDrawable(); dot.setShape(GradientDrawable.OVAL); dot.setColor(Color.WHITE); dot.setSize((int) px(11), (int) px(11));
+        eye.setCompoundDrawablesWithIntrinsicBounds(dot, null, null, null);
+        title.setTextColor(ink); sub.setTextColor(alpha(ink, 205));
+        // motion: the giant words sway; the glows drift (Studio → Sway and Speed)
+        float speed = (float) Math.max(0.2, Math.min(4, lk.optDouble("speed", 1))), sw = (float) lk.optDouble("sway", 110);
+        if (sway != null) sway.cancel();
+        sway = ObjectAnimator.ofFloat(big1, "translationX", px(sw), -px(sw)); sway.setDuration((long) (30_000 / speed)); sway.setRepeatCount(ValueAnimator.INFINITE); sway.setRepeatMode(ValueAnimator.REVERSE); sway.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator()); sway.start();
+        float[][] mv = {{380, -260, 26}, {-300, 220, 32}, {260, -200, 21}};
         for (int i = 0; i < 3; i++) {
-            GradientDrawable d = new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM, new int[]{alpha(cs[i], i == 1 ? 120 : 150), alpha(cs[i], 0)});
-            d.setGradientType(GradientDrawable.RADIAL_GRADIENT); d.setGradientRadius(px(i == 1 ? 550 : 650)); d.setShape(GradientDrawable.OVAL);
-            glows[i].setBackground(d);
+            if (drifts[i] != null) drifts[i].cancel();
+            android.animation.PropertyValuesHolder hx = android.animation.PropertyValuesHolder.ofFloat("translationX", 0, px(mv[i][0])), hy = android.animation.PropertyValuesHolder.ofFloat("translationY", 0, px(mv[i][1])),
+                sx = android.animation.PropertyValuesHolder.ofFloat("scaleX", 1f, 1.2f), sy = android.animation.PropertyValuesHolder.ofFloat("scaleY", 1f, 1.2f);
+            drifts[i] = ObjectAnimator.ofPropertyValuesHolder(glows[i], hx, hy, sx, sy); drifts[i].setDuration((long) (mv[i][2] * 1000 / speed));
+            drifts[i].setRepeatCount(ValueAnimator.INFINITE); drifts[i].setRepeatMode(ValueAnimator.REVERSE); drifts[i].setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator()); drifts[i].start();
         }
-        big1.setTextColor(alpha(accent, 150)); big2.setTextColor(Color.argb(28, 255, 255, 255));
-        GradientDrawable cd = new GradientDrawable(); cd.setColor(alpha(cardC, 205)); cd.setCornerRadius(px(46)); cd.setStroke((int) Math.max(1, px(2)), Color.argb(40, 255, 255, 255));
-        card.setBackground(cd);
-        GradientDrawable pill = new GradientDrawable(); pill.setColor(accent); pill.setCornerRadius(px(60));
-        eye.setBackground(pill);
+        grain.setVisibility(lk.optBoolean("grain", true) ? View.VISIBLE : View.GONE); grain.setAlpha((float) Math.max(0, Math.min(1, lk.optDouble("grainK", 0.8))) * 0.9f);
+        // a picture instead of the giant words (Studio → Background picture: position, size, opacity)
+        String bgu = lk.optString("bgImg", "");
+        if (!bgu.equals(shownBg)) {
+            shownBg = bgu;
+            if (bgu.isEmpty()) { bgPic.setVisibility(View.GONE); big1.setVisibility(View.VISIBLE); big2.setVisibility(View.VISIBLE); }
+            else { big1.setVisibility(View.GONE); big2.setVisibility(View.GONE); picture(bgu, 1600, new Got() { @Override public void got(Bitmap b) { bgPic.setImageBitmap(b); bgPic.setVisibility(View.VISIBLE); } }); }
+        }
+        if (!bgu.isEmpty()) {
+            float sc = (float) lk.optDouble("bgScale", 100) / 100f, w = 1600 * sc, h = 900 * sc;
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams((int) px(w), (int) px(h));
+            lp.leftMargin = (int) px((float) (1920 * lk.optDouble("bgX", 39) / 100 - w / 2)); lp.topMargin = (int) px((float) (1080 * lk.optDouble("bgY", 33) / 100 - h / 2));
+            bgPic.setLayoutParams(lp); bgPic.setAlpha((float) Math.max(0, Math.min(1, lk.optDouble("bgOp", 92) / 100)));
+        }
     }
-    private static int darker(int c) { return Color.rgb(Color.red(c) / 3, Color.green(c) / 3, Color.blue(c) / 3); }
 
     /* ── the Updating screen ── */
     private void setCover(String t, String s, int pct) {
         coverTitle.setText(t); coverSub.setText(s == null ? "" : s);
         coverBar.setVisibility(pct < 0 ? View.GONE : View.VISIBLE); if (pct >= 0) coverBar.setProgress(pct);
-        cover.setVisibility(View.VISIBLE);
+        cover.setAlpha(1); cover.setVisibility(View.VISIBLE);
     }
-    private void hideCover() { if (cover.getVisibility() == View.VISIBLE) cover.animate().alpha(0).setDuration(600).withEndAction(new Runnable() { @Override public void run() { cover.setVisibility(View.GONE); cover.setAlpha(1); } }).start(); }
+    private void hideCover() { if (cover.getVisibility() == View.VISIBLE) cover.animate().alpha(0).setDuration(700).withEndAction(new Runnable() { @Override public void run() { cover.setVisibility(View.GONE); cover.setAlpha(1); } }).start(); }
 
-    /* ── reading the website every 15 s ── */
+    /* ── the website, every second: "anything changed?" (a tiny answer when not) ── */
+    private volatile boolean asking = false;
     private final Runnable poll = new Runnable() {
         @Override public void run() {
-            net.execute(new Runnable() { @Override public void run() {
-                final JSONObject j = get(Site.get(LedActivity.this) + "api/led.php");
-                ui.post(new Runnable() { @Override public void run() { onFeed(j); } });
-            } });
-            ui.postDelayed(this, FEED_MS);
+            if (!asking) {
+                asking = true;
+                final String since = SystemClock.elapsedRealtime() - lastFull > 10 * 60_000 ? "" : feedH; // a full copy at least every 10 minutes
+                net.execute(new Runnable() { @Override public void run() {
+                    final JSONObject j = get(Site.get(LedActivity.this) + "api/led.php" + (since.isEmpty() ? "" : "?since=" + since));
+                    ui.post(new Runnable() { @Override public void run() { asking = false; onFeed(j); } });
+                } });
+            }
+            ui.postDelayed(this, POLL_MS);
         }
     };
 
@@ -244,51 +313,86 @@ public class LedActivity extends Activity {
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(12_000); c.setReadTimeout(15_000); c.setUseCaches(false);
+            c.setConnectTimeout(10_000); c.setReadTimeout(12_000); c.setUseCaches(false);
             c.setRequestProperty("User-Agent", "SweetTV/" + Updater.currentName(this) + " (Android " + Build.VERSION.RELEASE + ")");
             if (c.getResponseCode() != 200) return null;
-            String s = new String(Store.readAll(c.getInputStream()), "UTF-8");
-            JSONObject j = new JSONObject(s);
+            JSONObject j = new JSONObject(new String(Store.readAll(c.getInputStream()), "UTF-8"));
             return j.optBoolean("ok") ? j : null;
         } catch (Throwable e) { return null; } finally { if (c != null) c.disconnect(); }
     }
 
     private void onFeed(JSONObject j) {
         if (j == null) {
-            if (feed == null) setCover("Waiting for the internet", "The LED screen starts as soon as " + Site.host(this) + " can be reached.", -1);
+            if (feed == null && !started) setCover("Waiting for the internet", "The LED screen starts as soon as " + Site.host(this) + " can be reached.", -1);
             return;
         }
         lastFeedOk = SystemClock.elapsedRealtime();
-        boolean first = feed == null; feed = j;
-        JSONObject cs = j.optJSONObject("colors"); if (cs == null) cs = new JSONObject();
-        applyColors(col(cs, "bg", Color.rgb(5, 3, 4)), col(cs, "acc", Color.rgb(232, 16, 28)), col(cs, "card", Color.rgb(26, 18, 20)));
+        if (j.optBoolean("same")) return; // nothing changed
+        feedH = j.optString("h", ""); lastFull = lastFeedOk; feed = j;
+        JSONObject cs = j.optJSONObject("colors"), lk = j.optJSONObject("look");
+        applyLook(cs == null ? new JSONObject() : cs, lk == null ? new JSONObject() : lk);
         big1.setText(j.optString("big", "97.7")); big2.setText(j.optString("big2", "FM"));
         String lg = j.optString("logo", "");
-        if (!lg.equals(shownLogo)) { shownLogo = lg; picture(lg, 900, new Got() { @Override public void got(Bitmap b) { logo.setImageBitmap(b); lockLogo.setImageBitmap(b); coverLogo.setImageBitmap(b); saveBrand(b); } }); }
+        if (!lg.equals(shownLogo)) { shownLogo = lg; picture(lg, 900, new Got() { @Override public void got(Bitmap b) { lockLogo.setImageBitmap(b); coverLogo.setImageBitmap(b); saveBrand(b); } }); }
         List<JSONObject> list = new ArrayList<>(); JSONArray a = j.optJSONArray("items");
         if (a != null) for (int i = 0; i < a.length(); i++) { JSONObject o = a.optJSONObject(i); if (o != null) list.add(o); }
-        // keep the item on screen if it's still there; its new content shows on the next turn
         String curId = idx >= 0 && idx < items.size() ? items.get(idx).optString("id") : "";
         items = list; idx = -1; for (int i = 0; i < items.size(); i++) if (items.get(i).optString("id").equals(curId)) idx = i;
-        if (idx >= 0) refresh(items.get(idx));
-        card.setVisibility(items.isEmpty() ? View.GONE : View.VISIBLE);
-        for (JSONObject o : items) { String u = o.optString("img"); if (!u.isEmpty()) picture(u, 1100, null); }
+        if (idx >= 0 && started) update(items.get(idx)); // new words for the item on screen show right away
+        if (items.isEmpty()) card.setVisibility(View.INVISIBLE);
         lockView.setVisibility(j.optBoolean("lock") ? View.VISIBLE : View.GONE);
         blackView.setVisibility(j.optBoolean("black") ? View.VISIBLE : View.GONE);
         playVideo(j.optString("video", ""));
-        if (first) { hideCover(); slideEnds = 0; }
+        tidy(j);
+        if (!started) prepare();
     }
 
-    /* ── one item after another ── */
+    /* the first time: save every picture the screen uses, with the progress bar (like the website's LED page), then start */
+    private void prepare() {
+        final List<String> need = urls(feed); need.remove(feed.optString("video", ""));
+        final int[] done = {0}; final int n = need.size();
+        if (n == 0) { start(); return; }
+        setCover("Updating", "Saving the LED screen's files on this TV…", 5);
+        for (final String u : need) picture(u, 1600, null);
+        ui.post(new Runnable() { final long t0 = SystemClock.elapsedRealtime(); @Override public void run() {
+            int have = 0; for (String u : need) if (pics.containsKey(u) || cacheFile(u, "").exists()) have++;
+            setCover("Updating", "Saving files on this screen: " + Math.min(n, have + 1) + " of " + n, 5 + 90 * have / n);
+            if (have >= n || SystemClock.elapsedRealtime() - t0 > 45_000) { coverBar.setProgress(100); start(); } else ui.postDelayed(this, 400);
+        } });
+    }
+    private void start() { started = true; hideCover(); slideEnds = 0; }
+
+    /* every address the content uses (pictures, the logo, the video) */
+    private static List<String> urls(JSONObject j) {
+        List<String> o = new ArrayList<>(); if (j == null) return o;
+        String[] one = {j.optString("logo"), j.optJSONObject("look") != null ? j.optJSONObject("look").optString("bgImg") : "", j.optString("video")};
+        for (String s : one) if (s != null && !s.isEmpty() && !s.startsWith("data:") && !o.contains(s)) o.add(s);
+        JSONArray a = j.optJSONArray("items");
+        if (a != null) for (int i = 0; i < a.length(); i++) { JSONObject it = a.optJSONObject(i); if (it == null) continue;
+            String im = it.optString("img"); if (!im.isEmpty() && !im.startsWith("data:") && !o.contains(im)) o.add(im);
+            JSONArray ims = it.optJSONArray("imgs"); if (ims != null) for (int x = 0; x < ims.length(); x++) { String s = ims.optString(x); if (!s.isEmpty() && !o.contains(s)) o.add(s); } }
+        return o;
+    }
+
+    /* files the screen no longer uses are deleted (and dropped from memory) */
+    private void tidy(JSONObject j) {
+        final java.util.Set<String> keep = new java.util.HashSet<>();
+        for (String u : urls(j)) { keep.add(sha1(u)); keep.add(sha1(u) + ".mp4"); }
+        img.execute(new Runnable() { @Override public void run() {
+            File[] all = new File(getFilesDir(), "led").listFiles(); if (all == null) return; long now = System.currentTimeMillis();
+            for (File f : all) if (!keep.contains(f.getName()) && now - f.lastModified() > 10 * 60_000) f.delete();
+        } });
+        java.util.Set<String> live = new java.util.HashSet<>(urls(j));
+        for (String u : new ArrayList<>(pics.keySet())) if (!live.contains(u)) pics.remove(u);
+    }
+
+    /* ── one item after another, each for its time ── */
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             try {
-                TimeZone tz = TimeZone.getTimeZone(feed != null ? feed.optString("tz", "Asia/Manila") : "Asia/Manila");
-                SimpleDateFormat f = new SimpleDateFormat("h:mm a", Locale.US); f.setTimeZone(tz);
-                clock.setText(f.format(new Date()));
                 long now = SystemClock.elapsedRealtime();
-                if (feed != null && !items.isEmpty() && now >= slideEnds) next();
-                else if (idx >= 0 && idx < items.size()) live(items.get(idx)); // clock and countdown items count every second
+                if (started && feed != null && !items.isEmpty() && now >= slideEnds) next();
+                else if (started && idx >= 0 && idx < items.size()) live(items.get(idx)); // clock and countdown count every second
             } catch (Throwable ignored) { }
             ui.postDelayed(this, 1000);
         }
@@ -297,36 +401,62 @@ public class LedActivity extends Activity {
     private void next() {
         idx = (idx + 1) % items.size();
         final JSONObject it = items.get(idx);
-        slideEnds = SystemClock.elapsedRealtime() + it.optInt("dur", 10) * 1000L;
-        card.animate().alpha(0).translationY(px(-30)).setDuration(260).withEndAction(new Runnable() { @Override public void run() {
-            show(it);
-            card.setTranslationY(px(40));
-            card.animate().alpha(1).translationY(0).setDuration(520).start();
-        } }).start();
+        slideEnds = SystemClock.elapsedRealtime() + Math.max(3, it.optInt("dur", 10)) * 1000L;
+        if (card.getVisibility() != View.VISIBLE) { enter(it); return; }
+        card.animate().alpha(0).scaleX(0.96f).scaleY(0.96f).translationY(px(-24)).setDuration(420).setInterpolator(new android.view.animation.AccelerateInterpolator()).withEndAction(new Runnable() { @Override public void run() { enter(it); } }).start();
     }
 
-    private void refresh(JSONObject it) { if (card.getAlpha() > 0.9f) show(it); }
+    /* the glass card comes in; then its parts rise in one after another (the website's entrance) */
+    private void enter(JSONObject it) {
+        if (push != null) push.cancel();
+        show(it);
+        card.setVisibility(View.VISIBLE); card.setAlpha(0); card.setScaleX(0.9f); card.setScaleY(0.9f); card.setTranslationY(px(50));
+        card.animate().alpha(1).scaleX(1).scaleY(1).translationY(0).setDuration(1150).setInterpolator(new DecelerateInterpolator(2.2f)).withEndAction(new Runnable() { @Override public void run() {
+            long d = Math.max(1000, slideEnds - SystemClock.elapsedRealtime());
+            push = new AnimatorSet(); push.playTogether(ObjectAnimator.ofFloat(card, "scaleX", 1f, 1.035f), ObjectAnimator.ofFloat(card, "scaleY", 1f, 1.035f)); // a slow push in
+            push.setDuration(d); push.setInterpolator(new LinearInterpolator()); push.start();
+        } }).start();
+        int n = 0;
+        for (int i = 0; i < card.getChildCount(); i++) { View v = card.getChildAt(i); if (v.getVisibility() != View.VISIBLE) continue; rise(v, 250 + n * 90); n++; }
+        for (int i = 0; i < rows.getChildCount(); i++) rise(rows.getChildAt(i), 420 + i * 110);
+    }
+    private void rise(View v, long delay) { v.setAlpha(0); v.setTranslationY(px(40)); v.animate().alpha(1).translationY(0).setStartDelay(delay).setDuration(1000).setInterpolator(new DecelerateInterpolator(2.4f)).start(); }
+
+    private void refresh(JSONObject it) { if (started && card.getVisibility() == View.VISIBLE) update(it); }
+    /** New content for the item on screen, without the entrance. */
+    private void update(JSONObject it) { show(it); for (int i = 0; i < card.getChildCount(); i++) { card.getChildAt(i).setAlpha(1); card.getChildAt(i).setTranslationY(0); } }
+
+    private static int fit(String t, int max) { // the website's sizing: big type shrinks for long names so words never break
+        if (t == null) t = ""; int n = t.length(), longest = 1; for (String w : t.split("\\s+")) longest = Math.max(longest, w.length());
+        return (int) Math.round(Math.min(max, Math.min(2600.0 / Math.max(n, 6) * 1.25, 1450.0 / longest * 1.7)));
+    }
 
     private void show(JSONObject it) {
-        String t = it.optString("type");
-        String e = it.optString("eye"), b = it.optString("big"), s = it.optString("sub"), u = it.optString("img");
-        rows.removeAllViews(); pic.setVisibility(View.GONE); pic.setImageDrawable(null); title.setTypeface(bold);
-        if (t.equals("clock") || t.equals("countdown")) { live(it); }
-        else { setText(eye, e); setBig(b); setText(sub, s); }
-        if (t.equals("image") || t.equals("logo")) { eye.setVisibility(View.GONE); title.setVisibility(View.GONE); sub.setVisibility(View.GONE); }
+        String t = it.optString("type"), e = it.optString("eye"), b = it.optString("big"), s = it.optString("sub"), u = it.optString("img");
+        float kk = (float) Math.max(0.4, Math.min(2.5, it.optDouble("k", 1)));
+        rows.removeAllViews(); pic.setVisibility(View.GONE); pic.setImageDrawable(null);
+        title.setTypeface(anton); title.setAllCaps(true); title.setMaxLines(4); size(title, fit(b, 230) * kk);
+        setText(eye, e); setText(title, b); setText(sub, s); size(sub, 40 * Math.min(1.3f, kk));
+        if (t.equals("clock") || t.equals("countdown")) live(it);
+        if (t.equals("poll") || t.equals("qr")) size(title, Math.min(104, fit(b, 104)) * kk); // the poll's question: the mid size
+        if (t.equals("image") || t.equals("logo") || t.equals("sponsor")) { title.setVisibility(View.GONE); sub.setVisibility(View.GONE); if (!t.equals("sponsor")) eye.setVisibility(View.GONE); }
         if (t.equals("sponsor")) { JSONArray im = it.optJSONArray("imgs"); if (im != null && im.length() > 0) u = im.optString((int) ((System.currentTimeMillis() / 4000) % im.length())); }
         if (!u.isEmpty()) {
             Bitmap bm = pics.get(u);
-            if (bm != null) { pic.setImageBitmap(bm); pic.setVisibility(View.VISIBLE);
-                LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) pic.getLayoutParams(); boolean only = t.equals("image") || t.equals("logo") || t.equals("sponsor");
-                lp.width = (int) px(only ? 1180 : 360); lp.height = (int) px(only ? 620 : 360); lp.topMargin = (int) px(only ? 0 : 24); pic.setLayoutParams(lp); }
-            else picture(u, 1100, null);
+            if (bm != null) {
+                pic.setImageBitmap(bm); pic.setVisibility(View.VISIBLE);
+                LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) pic.getLayoutParams();
+                if (t.equals("logo")) { int h = (int) px(it.optInt("h", 286) * kk); lp.height = h; lp.width = Math.round(h * bm.getWidth() / (float) Math.max(1, bm.getHeight())); }
+                else if (t.equals("image")) { float r = Math.min(px(1500) / bm.getWidth(), px(780) / bm.getHeight()); lp.width = (int) (bm.getWidth() * r * kk); lp.height = (int) (bm.getHeight() * r * kk); }
+                else if (t.equals("sponsor")) { float r = Math.min(px(900) / bm.getWidth(), px(380) / bm.getHeight()); lp.width = (int) (bm.getWidth() * r); lp.height = (int) (bm.getHeight() * r); }
+                else { float r = Math.min(px(520) / bm.getWidth(), px(300) / bm.getHeight()); lp.width = (int) (bm.getWidth() * r); lp.height = (int) (bm.getHeight() * r); }
+                pic.setLayoutParams(lp);
+            } else picture(u, 1600, null);
         }
         JSONArray rs = it.optJSONArray("rows");
         if (rs != null) {
             if (t.equals("top3") || t.equals("social")) title.setVisibility(View.GONE);
-            if (t.equals("poll")) size(title, 74);
-            for (int i = 0; i < rs.length() && i < 5; i++) rows.addView(row(rs.optJSONObject(i), t, i));
+            for (int i = 0; i < rs.length() && i < 6; i++) rows.addView(row(rs.optJSONObject(i), t, i, kk));
         }
     }
 
@@ -334,46 +464,52 @@ public class LedActivity extends Activity {
         String t = it.optString("type");
         TimeZone tz = TimeZone.getTimeZone(feed != null ? feed.optString("tz", "Asia/Manila") : "Asia/Manila");
         if (t.equals("clock")) {
-            SimpleDateFormat d = new SimpleDateFormat("EEEE", Locale.US), h = new SimpleDateFormat("h:mm", Locale.US), a = new SimpleDateFormat("a · MMMM d", Locale.US);
-            d.setTimeZone(tz); h.setTimeZone(tz); a.setTimeZone(tz); Date n = new Date();
-            setText(eye, d.format(n)); title.setTypeface(anton); setBig(h.format(n)); setText(sub, a.format(n));
+            SimpleDateFormat d = new SimpleDateFormat("EEEE", Locale.US), h = new SimpleDateFormat("h:mm", Locale.US), a = new SimpleDateFormat("a", Locale.US), dt = new SimpleDateFormat("MMMM d, yyyy", Locale.US);
+            d.setTimeZone(tz); h.setTimeZone(tz); a.setTimeZone(tz); dt.setTimeZone(tz); Date n = new Date();
+            setText(eye, d.format(n)); title.setText(h.format(n) + " " + a.format(n)); size(title, 230); title.setVisibility(View.VISIBLE); setText(sub, dt.format(n));
         } else if (t.equals("countdown")) {
-            long ms = Math.max(0, it.optLong("at") - (System.currentTimeMillis() + skew()));
+            long ms = Math.max(0, it.optLong("at") - System.currentTimeMillis());
             long hh = ms / 3_600_000, mm = ms % 3_600_000 / 60_000, ss = ms % 60_000 / 1000;
-            setText(eye, it.optString("eye", "Countdown")); title.setTypeface(anton);
-            setBig((hh > 0 ? hh + ":" : "") + String.format(Locale.US, "%02d:%02d", mm, ss)); setText(sub, "");
+            setText(eye, it.optString("eye", "Countdown")); title.setText((hh > 0 ? hh + ":" : "") + String.format(Locale.US, "%02d:%02d", mm, ss)); size(title, 230); title.setVisibility(View.VISIBLE); setText(sub, "");
         }
     }
-    private long skew() { return 0; }
 
     private void setText(TextView v, String s) { v.setText(s); v.setVisibility(s == null || s.isEmpty() ? View.GONE : View.VISIBLE); }
-    private void setBig(String s) {
-        int n = s == null ? 0 : s.length();
-        size(title, n <= 8 ? 190 : n <= 14 ? 150 : n <= 24 ? 118 : n <= 40 ? 92 : 72);
-        setText(title, s);
-    }
 
-    private View row(JSONObject r, String type, int i) {
+    /* a row: Top 3 (rank, title, artist), poll option (with its share), or a social network */
+    private View row(JSONObject r, String type, int i, float kk) {
+        if (r == null) r = new JSONObject();
         LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER_VERTICAL);
-        l.setPadding((int) px(26), (int) px(14), (int) px(26), (int) px(14));
-        GradientDrawable bg = new GradientDrawable(); bg.setColor(Color.argb(22, 255, 255, 255)); bg.setCornerRadius(px(26)); l.setBackground(bg);
-        String n = r == null ? "" : r.optString("n");
-        if (!n.isEmpty()) {
-            TextView num = text(anton, 70, Color.WHITE); num.setGravity(Gravity.CENTER); num.setText(n);
-            GradientDrawable nb = new GradientDrawable(); nb.setColor(acc); nb.setCornerRadius(px(22)); num.setBackground(nb);
-            l.addView(num, new LinearLayout.LayoutParams((int) px(104), (int) px(104)));
-        }
-        LinearLayout tx = new LinearLayout(this); tx.setOrientation(LinearLayout.VERTICAL); tx.setPadding((int) px(28), 0, 0, 0);
-        TextView a = text(bold, type.equals("poll") ? 50 : 56, Color.WHITE); a.setSingleLine(true); a.setEllipsize(TextUtils.TruncateAt.END); a.setText(r == null ? "" : r.optString("title"));
-        tx.addView(a);
-        String sb = r == null ? "" : r.optString("sub");
-        if (!sb.isEmpty()) { TextView b = text(semi, 36, Color.argb(200, 255, 255, 255)); b.setSingleLine(true); b.setText(sb); tx.addView(b); }
-        l.addView(tx, new LinearLayout.LayoutParams(0, -2, 1));
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-1, -2); p.topMargin = (int) px(i == 0 ? 30 : 16);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams((int) px(type.equals("social") ? 900 : 1200), -2); p.gravity = Gravity.CENTER_HORIZONTAL; p.topMargin = (int) px(i == 0 ? 30 : type.equals("poll") ? 16 : 22);
         l.setLayoutParams(p);
-        l.setAlpha(0); l.setTranslationX(px(-40)); l.animate().alpha(1).translationX(0).setStartDelay(180 + i * 120L).setDuration(420).start();
+        if (type.equals("social")) { // the network's name small, the handle big
+            LinearLayout c = new LinearLayout(this); c.setOrientation(LinearLayout.VERTICAL); c.setGravity(Gravity.CENTER_HORIZONTAL);
+            TextView a = text(bold, 24, Color.rgb(255, 106, 90)); a.setAllCaps(true); a.setLetterSpacing(0.2f); a.setText(r.optString("sub")); c.addView(a, wrap(0));
+            TextView b = text(anton, 92 * kk, ink); b.setText(r.optString("title")); c.addView(b, wrap(6));
+            l.setGravity(Gravity.CENTER); l.addView(c, new LinearLayout.LayoutParams(-1, -2)); return l;
+        }
+        l.setPadding((int) px(34), (int) px(18), (int) px(34), (int) px(18));
+        if (type.equals("poll")) {
+            int pct = r.optInt("pct", 0);
+            GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{alpha(acc, 110), alpha(acc, 110), Color.argb(18, 255, 255, 255), Color.argb(18, 255, 255, 255)});
+            bg.setCornerRadius(px(26)); bg.setStroke((int) Math.max(1, px(1.5f)), Color.argb(40, 255, 255, 255));
+            l.setBackground(pct > 0 ? new LayerDrawable(new Drawable[]{plain(), clip(pct)}) : plain());
+            TextView a = text(semi, 40 * kk, ink); a.setSingleLine(true); a.setEllipsize(TextUtils.TruncateAt.END); a.setText(r.optString("title")); l.addView(a, new LinearLayout.LayoutParams(0, -2, 1));
+            TextView b = text(bold, 40 * kk, ink); b.setText(pct + "%"); l.addView(b);
+            return l;
+        }
+        GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{alpha(acc, 89), Color.argb(10, 255, 255, 255)});
+        bg.setCornerRadius(px(34)); bg.setStroke((int) Math.max(1, px(1.5f)), Color.argb(41, 255, 255, 255)); l.setBackground(bg);
+        String n = r.optString("n");
+        if (!n.isEmpty()) { TextView num = text(anton, 120 * kk, Color.WHITE); num.setGravity(Gravity.CENTER); num.setText(n); l.addView(num, new LinearLayout.LayoutParams((int) px(110), -2)); }
+        LinearLayout tx = new LinearLayout(this); tx.setOrientation(LinearLayout.VERTICAL); tx.setPadding((int) px(34), 0, 0, 0);
+        TextView a = text(anton, 72 * kk, ink); a.setAllCaps(true); a.setSingleLine(true); a.setEllipsize(TextUtils.TruncateAt.END); a.setText(r.optString("title")); tx.addView(a);
+        String sb = r.optString("sub"); if (!sb.isEmpty()) { TextView b = text(semi, 30 * kk, alpha(ink, 205)); b.setSingleLine(true); b.setText(sb); LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-2, -2); bp.topMargin = (int) px(6); tx.addView(b, bp); }
+        l.addView(tx, new LinearLayout.LayoutParams(0, -2, 1));
         return l;
     }
+    private Drawable plain() { GradientDrawable d = new GradientDrawable(); d.setColor(Color.argb(20, 255, 255, 255)); d.setCornerRadius(px(26)); d.setStroke((int) Math.max(1, px(1.5f)), Color.argb(40, 255, 255, 255)); return d; }
+    private Drawable clip(int pct) { GradientDrawable d = new GradientDrawable(); d.setColor(alpha(acc, 110)); d.setCornerRadius(px(26)); android.graphics.drawable.ClipDrawable c = new android.graphics.drawable.ClipDrawable(d, Gravity.START, android.graphics.drawable.ClipDrawable.HORIZONTAL); c.setLevel(Math.max(0, Math.min(100, pct)) * 100); return c; }
 
     /* ── video loop ── */
     private void playVideo(final String url) {
@@ -479,7 +615,7 @@ public class LedActivity extends Activity {
     private void checkSite() {
         new Thread(new Runnable() { @Override public void run() {
             final String moved = Site.checkRemote(LedActivity.this);
-            if (moved != null) ui.post(new Runnable() { @Override public void run() { Site.set(LedActivity.this, moved); feed = null; setCover("Updating", "Connecting to " + Site.host(LedActivity.this) + "…", 3); } });
+            if (moved != null) ui.post(new Runnable() { @Override public void run() { Site.set(LedActivity.this, moved); feed = null; feedH = ""; started = false; setCover("Updating", "Connecting to " + Site.host(LedActivity.this) + "…", 3); } });
         } }).start();
     }
 
@@ -504,7 +640,7 @@ public class LedActivity extends Activity {
         new AlertDialog.Builder(this).setTitle(getString(R.string.app_name)).setItems(opts, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, int which) {
                 switch (which) {
-                    case 0: feed = null; setCover("Updating", "Reloading…", 3); ui.removeCallbacks(poll); ui.post(poll); break;
+                    case 0: feed = null; feedH = ""; started = false; setCover("Updating", "Reloading…", 3); break;
                     case 1: prefs.edit().putBoolean(AUTOSTART, !auto).apply(); Toast.makeText(LedActivity.this, auto ? "It will not open by itself." : "It will open when the TV turns on.", Toast.LENGTH_LONG).show(); if (!auto) askAutostart(); break;
                     case 2: update(ready); break;
                     case 3: { File[] all = new File(getFilesDir(), "led").listFiles(); if (all != null) for (File f : all) f.delete(); pics.clear(); shownLogo = ""; shownVideo = ""; Toast.makeText(LedActivity.this, "Cleared.", Toast.LENGTH_LONG).show(); break; }
@@ -522,7 +658,7 @@ public class LedActivity extends Activity {
             .setPositiveButton("Save", new DialogInterface.OnClickListener() { @Override public void onClick(DialogInterface d, int w) {
                 String site = Site.clean(in.getText().toString());
                 if (site == null) { Toast.makeText(LedActivity.this, "That isn't a website address. Example: sweet977.ph", Toast.LENGTH_LONG).show(); return; }
-                Site.set(LedActivity.this, site); feed = null; setCover("Updating", "Connecting to " + Site.host(LedActivity.this) + "…", 3); ui.removeCallbacks(poll); ui.post(poll);
+                Site.set(LedActivity.this, site); feed = null; feedH = ""; started = false; setCover("Updating", "Connecting to " + Site.host(LedActivity.this) + "…", 3);
             } }).setNegativeButton("Cancel", null).show();
     }
 

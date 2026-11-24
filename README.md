@@ -1,6 +1,6 @@
 # Sweet 97.7 LED: Android TV app
 
-Shows the website's LED screen (`https://sweet977.freehosting.dev/#led`) full screen on the Android TV that drives the LED wall.
+Shows the website's LED screen (`https://sweet977.ph/led`) full screen on the Android TV that drives the LED wall.
 
 - **Opens by itself** when the TV turns on (on Android 10 and later this needs "Display over other apps", which the app asks for once).
 - **Made for slow internet**: the page, its code, fonts, pictures and videos are saved on the TV the first time they are used and loaded from the TV after that. Only the small live updates come over the internet.

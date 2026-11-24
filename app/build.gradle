@@ -47,3 +47,7 @@ android {
         checkReleaseBuilds false
     }
 }
+
+dependencies {
+    implementation "com.google.zxing:core:3.5.3" // draws the QR codes on the LED screen
+}

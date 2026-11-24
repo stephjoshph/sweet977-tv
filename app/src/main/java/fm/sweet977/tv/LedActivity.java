@@ -91,6 +91,8 @@ public class LedActivity extends Activity {
     private VideoView video;
     private Typeface anton, bold, semi;
     private float k = 1; // the screen's size against the 1920 × 1080 design the website uses
+    private float stageScale = 1; private boolean small = false;
+    private long lastFrame = 0;
 
     private JSONObject feed;
     private String feedH = "";
@@ -132,6 +134,9 @@ public class LedActivity extends Activity {
         try { semi = Typeface.createFromAsset(getAssets(), "fonts/Inter-SemiBold.ttf"); } catch (Throwable e) { semi = Typeface.DEFAULT; }
         android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
         k = Math.min(Math.max(dm.widthPixels, dm.heightPixels) / 1920f, Math.min(dm.widthPixels, dm.heightPixels) / 1080f);
+        try { android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE); android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo(); if (am != null) am.getMemoryInfo(mi);
+            small = mi.totalMem > 0 && mi.totalMem < 1800L * 1024 * 1024; } catch (Throwable ignored) { }
+        if (small && k > 1280f / 1920f) { stageScale = k / (1280f / 1920f); k = 1280f / 1920f; }
         build();
         setContentView(root);
         hideBars();
@@ -158,6 +163,7 @@ public class LedActivity extends Activity {
         stage.setClipChildren(true);
         FrameLayout.LayoutParams sl = new FrameLayout.LayoutParams((int) px(1920), (int) px(1080), Gravity.CENTER);
         root.addView(stage, sl);
+        stage.setScaleX(stageScale); stage.setScaleY(stageScale); // a small TV: drawn at 1280 × 720, enlarged by the TV
 
         float[][] g = {{-332, 255, 1227}, {1144, -365, 1013}, {446, 416, 873}};
         for (int i = 0; i < 3; i++) { glows[i] = new Glow(this); stage.addView(glows[i], at(g[i][0], g[i][1], g[i][2], g[i][2])); }
@@ -278,6 +284,32 @@ public class LedActivity extends Activity {
     }
     private final Wipe wipe = new Wipe();
     private float wipeEvery = 7;
+
+    /** One letter of a title, rising and fading in after the ones before it (the website's letter animation). */
+    final class Letter extends android.text.style.ReplacementSpan {
+        final int i; Letter(int i) { this.i = i; }
+        @Override public int getSize(Paint p, CharSequence t, int s, int e, Paint.FontMetricsInt fm) { if (fm != null) p.getFontMetricsInt(fm); return Math.round(p.measureText(t, s, e)); }
+        @Override public void draw(Canvas c, CharSequence t, int s, int e, float x, int top, int y, int bot, Paint p) {
+            float f = Math.max(0, Math.min(1, (SystemClock.uptimeMillis() - lettersT0 - i * 38) / 620f)), q = 1 - (float) Math.pow(1 - f, 3);
+            int a = p.getAlpha(); p.setAlpha((int) (a * q));
+            c.save(); c.translate(0, (1 - q) * p.getTextSize() * 0.45f); c.rotate((1 - q) * 8, x, y); c.drawText(t, s, e, x, y, p); c.restore(); p.setAlpha(a);
+        }
+    }
+    private long lettersT0 = 0; private int lettersN = 0;
+    private void letters(String txt) {
+        if (txt == null || txt.isEmpty() || !G.optBoolean("letters", true)) { title.setText(txt == null ? "" : txt.toUpperCase(Locale.US)); lettersN = 0; return; }
+        String u = txt.toUpperCase(Locale.US); android.text.SpannableString sp = new android.text.SpannableString(u); int n = 0;
+        for (int i = 0; i < u.length(); i++) if (!Character.isWhitespace(u.charAt(i))) sp.setSpan(new Letter(n++), i, i + 1, android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        lettersT0 = SystemClock.uptimeMillis() + 300; lettersN = n; title.setText(sp);
+    }
+
+    /** A QR code (black on white) for the QR item. */
+    private Bitmap qr(String text, int size) {
+        try { com.google.zxing.common.BitMatrix m = new com.google.zxing.qrcode.QRCodeWriter().encode(text, com.google.zxing.BarcodeFormat.QR_CODE, size, size, java.util.Collections.singletonMap(com.google.zxing.EncodeHintType.MARGIN, 2));
+            int w = m.getWidth(), h = m.getHeight(); int[] px = new int[w * h]; for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) px[y * w + x] = m.get(x, y) ? Color.BLACK : Color.WHITE;
+            return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888);
+        } catch (Throwable e) { return null; }
+    }
 
     /** A quick box blur, a few passes, for the small glass picture. */
     private static void blur(Bitmap b, int r) {
@@ -482,7 +514,7 @@ public class LedActivity extends Activity {
     /* the glass card comes in; then its parts rise in one after another (the website's entrance) */
     private void enter(JSONObject it) {
         stopTweens(card);
-        show(it);
+        animate = true; show(it); animate = false;
         card.setVisibility(View.VISIBLE); card.setAlpha(0); card.setScaleX(0.9f); card.setScaleY(0.9f); card.setTranslationY(px(50));
         long et = (long) g("enter", 1150); tween(card, A, 0, 1, 0, et, OUT, null); tween(card, Y, px(50), 0, 0, et, OUT, null);
         tween(card, S, 0.9f, 1, 0, et, OUT, new Runnable() { @Override public void run() {
@@ -512,6 +544,8 @@ public class LedActivity extends Activity {
     private final android.view.Choreographer.FrameCallback frame = new android.view.Choreographer.FrameCallback() {
         @Override public void doFrame(long ns) {
             long now = SystemClock.uptimeMillis();
+            if (now - lastFrame < 30) { android.view.Choreographer.getInstance().postFrameCallback(this); return; } // a steady 30 frames a second
+            lastFrame = now;
             try {
                 // the background: the glows drift and grow, the giant words sway (Studio → Sway and Speed)
                 float[][] mv = {{380, -260, 26}, {-300, 220, 32}, {260, -200, 21}};
@@ -524,7 +558,8 @@ public class LedActivity extends Activity {
                     float x = Math.min(1, (now - t.t0) / (float) t.dur); set(t.v, t.prop, t.a + (t.b - t.a) * ease(t.ease, x));
                     if (x >= 1) { tws.remove(i--); if (t.end != null) t.end.run(); }
                 }
-                if (now - lastGlass > 70 && card.getVisibility() == View.VISIBLE) { lastGlass = now; glass.snap(); } // the frosted glass behind the card
+                if (now - lastGlass > (small ? 200 : 140) && card.getVisibility() == View.VISIBLE) { lastGlass = now; glass.snap(); } // the frosted glass behind the card
+                if (lettersN > 0 && now - lettersT0 < lettersN * 38L + 700) title.invalidate(); // the letters coming in
                 if (wipeEvery > 0) { long per = (long) (wipeEvery * 1000), ph = now % per; float np = ph < 1500 ? -1.3f + 2.6f * (float) (0.5 - 0.5 * Math.cos(Math.PI * ph / 1500.0)) : -2f;
                     if (np != wipe.pos) { wipe.pos = np; card.invalidate(); } }
             } catch (Throwable ignored) { }
@@ -543,12 +578,13 @@ public class LedActivity extends Activity {
         return (int) Math.round(Math.min(max, Math.min(2600.0 / Math.max(n, 6) * 1.25, 1450.0 / longest * 1.7)));
     }
 
+    private boolean animate = false;
     private void show(JSONObject it) {
         String t = it.optString("type"), e = it.optString("eye"), b = it.optString("big"), s = it.optString("sub"), u = it.optString("img");
         float kk = (float) Math.max(0.4, Math.min(2.5, it.optDouble("k", 1)));
         rows.removeAllViews(); pic.setVisibility(View.GONE); pic.setImageDrawable(null);
-        title.setTypeface(anton); title.setAllCaps(true); title.setMaxLines(4); size(title, fit(b, (int) g("title", 230)) * kk);
-        setText(eye, e); setText(title, b); setText(sub, s); size(sub, g("sub", 40) * Math.min(1.3f, kk)); size(eye, g("eye", 24));
+        title.setTypeface(anton); title.setAllCaps(false); title.setMaxLines(4); size(title, fit(b, (int) g("title", 230)) * kk);
+        setText(eye, e); setText(title, b); if (b != null && !b.isEmpty() && !t.equals("clock") && !t.equals("countdown")) { if (animate) letters(b); else title.setText(b.toUpperCase(Locale.US)); } setText(sub, s); size(sub, g("sub", 40) * Math.min(1.3f, kk)); size(eye, g("eye", 24));
         if (t.equals("clock") || t.equals("countdown")) live(it);
         if (t.equals("poll") || t.equals("qr")) size(title, Math.min(g("mid", 104), fit(b, (int) g("mid", 104))) * kk); // the poll's question: the mid size
         if (t.equals("image") || t.equals("logo") || t.equals("sponsor")) { title.setVisibility(View.GONE); sub.setVisibility(View.GONE); if (!t.equals("sponsor")) eye.setVisibility(View.GONE); }
@@ -565,6 +601,11 @@ public class LedActivity extends Activity {
                 pic.setLayoutParams(lp);
             } else picture(u, 1600, null);
         }
+        if (t.equals("qr") && !it.optString("url").isEmpty()) {
+            Bitmap q = qr(it.optString("url"), (int) px(440));
+            if (q != null) { pic.setImageBitmap(q); pic.setVisibility(View.VISIBLE); GradientDrawable wb = new GradientDrawable(); wb.setColor(Color.WHITE); wb.setCornerRadius(px(28)); pic.setBackground(wb); int pd = (int) px(18); pic.setPadding(pd, pd, pd, pd);
+                LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) pic.getLayoutParams(); lp.width = (int) px(440) + 2 * pd; lp.height = lp.width; pic.setLayoutParams(lp); }
+        } else { pic.setBackground(null); pic.setPadding(0, 0, 0, 0); }
         JSONArray rs = it.optJSONArray("rows");
         if (rs != null) {
             if (t.equals("top3") || t.equals("social")) title.setVisibility(View.GONE);

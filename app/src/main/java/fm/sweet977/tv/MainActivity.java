@@ -111,6 +111,7 @@ public class MainActivity extends Activity {
         hideBars();
         store = new Store(this);
         makeWeb();
+        chromeVersion(); // read on the main thread, kept for later
         web.loadUrl(Site.start(MainActivity.this));
         ui.postDelayed(watch, WATCH_MS);
         checkSite();
@@ -186,12 +187,16 @@ public class MainActivity extends Activity {
         }
     };
     static final int MIN_CHROME = 69;
-    /** The web engine's version (from its user agent), or 0 if unknown. */
+    /** The web engine's version (from its user agent), or 0 if unknown. Read once on the main thread: the page's calls come on another thread, where the web view can't be asked. */
+    private volatile int chromeV = -1;
     private int chromeVersion() {
+        if (chromeV >= 0) return chromeV;
         try {
-            java.util.regex.Matcher m = java.util.regex.Pattern.compile("Chrome/(\\d+)").matcher(web.getSettings().getUserAgentString());
-            return m.find() ? Integer.parseInt(m.group(1)) : 0;
-        } catch (Exception e) { return 0; }
+            String ua = android.webkit.WebSettings.getDefaultUserAgent(this);
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("Chrome/(\\d+)").matcher(ua == null ? "" : ua);
+            chromeV = m.find() ? Integer.parseInt(m.group(1)) : 0;
+        } catch (Throwable e) { chromeV = 0; }
+        return chromeV;
     }
 
     private static String js(String s) {
@@ -250,6 +255,10 @@ public class MainActivity extends Activity {
         /** This TV, for the Studio (developer): model, Android, app version, screen, memory and storage. */
         @JavascriptInterface
         public String info() {
+            try { return infoJson(); } catch (Throwable e) { return "{}"; }
+        }
+
+        private String infoJson() {
             String id = prefs.getString("tvId", "");
             if (id.isEmpty()) { id = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16); prefs.edit().putString("tvId", id).apply(); }
             android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
@@ -292,27 +301,27 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String files() {
-            return store.listJson();
+            try { return store.listJson(); } catch (Throwable e) { return "[]"; }
         }
 
         @JavascriptInterface
         public boolean del(String name) {
-            return store.delName(name);
+            try { return store.delName(name); } catch (Throwable e) { return false; }
         }
 
         @JavascriptInterface
         public void clearAll() {
-            store.clearFiles();
+            try { store.clearFiles(); } catch (Throwable ignored) { }
         }
 
         @JavascriptInterface
         public boolean has(String url) {
-            return store.has(url);
+            try { return store.has(url); } catch (Throwable e) { return false; }
         }
 
         @JavascriptInterface
         public void keep(String url) {
-            store.keep(url);
+            try { store.keep(url); } catch (Throwable ignored) { }
         }
     }
 

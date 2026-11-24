@@ -179,11 +179,15 @@ public class LedActivity extends Activity {
 
         card = new LinearLayout(this); card.setOrientation(LinearLayout.VERTICAL); card.setGravity(Gravity.CENTER_HORIZONTAL);
         card.setPadding((int) px(76), (int) px(56), (int) px(76), (int) px(64));
+        if (Build.VERSION.SDK_INT >= 23) card.setForeground(wipe);
+        card.setOutlineProvider(new android.view.ViewOutlineProvider() { @Override public void getOutline(View v, android.graphics.Outline o) { o.setRoundRect(0, (int) px(30), v.getWidth(), v.getHeight() + (int) px(20), px(g("radius", 56))); o.setAlpha(0.75f); } });
+        card.setElevation(px(60));
+        if (Build.VERSION.SDK_INT >= 28) { card.setOutlineSpotShadowColor(Color.BLACK); card.setOutlineAmbientShadowColor(Color.BLACK); }
         stage.addView(card, new FrameLayout.LayoutParams(-2, -2, Gravity.CENTER));
         eye = text(bold, 24, Color.WHITE); eye.setAllCaps(true); eye.setLetterSpacing(0.22f); eye.setGravity(Gravity.CENTER_VERTICAL);
         eye.setPadding((int) px(18), (int) px(11), (int) px(22), (int) px(11)); eye.setCompoundDrawablePadding((int) px(12));
         card.addView(eye, wrap(0));
-        title = text(anton, 230, Color.WHITE); title.setGravity(Gravity.CENTER); title.setAllCaps(true); title.setLineSpacing(0, 0.86f); title.setMaxWidth((int) px(1560));
+        title = text(anton, 230, Color.WHITE); title.setShadowLayer(px(40), 0, px(26), Color.argb(140, 0, 0, 0)); title.setGravity(Gravity.CENTER); title.setAllCaps(true); title.setLineSpacing(0, 0.86f); title.setMaxWidth((int) px(1560));
         card.addView(title, wrap(26));
         pic = new ImageView(this); pic.setScaleType(ImageView.ScaleType.FIT_CENTER); pic.setAdjustViewBounds(true); pic.setVisibility(View.GONE);
         card.addView(pic, wrap(26));
@@ -228,7 +232,7 @@ public class LedActivity extends Activity {
     /** The card's frosted glass: the background behind it, blurred (drawn small and soft, then stretched), under the card colour. */
     final class Glass extends Drawable {
         static final int D = 12; // 1920 × 1080 drawn at 160 × 90
-        Bitmap snap; int tint = Color.argb(72, 30, 6, 10); final Paint pb = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG), pt = new Paint(Paint.ANTI_ALIAS_FLAG);
+        Bitmap snap; int tint = Color.argb(72, 30, 6, 10); final Paint pb = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG), pt = new Paint(Paint.ANTI_ALIAS_FLAG), pe = new Paint(Paint.ANTI_ALIAS_FLAG);
         final android.graphics.Path clip = new android.graphics.Path(); final android.graphics.Matrix inv = new android.graphics.Matrix();
         void snap() {
             int w = Math.max(1, stage.getWidth() / D), h = Math.max(1, stage.getHeight() / D);
@@ -247,11 +251,34 @@ public class LedActivity extends Activity {
             clip.reset(); clip.addRoundRect(new android.graphics.RectF(b), r, r, android.graphics.Path.Direction.CW);
             c.save(); c.clipPath(clip);
             if (snap != null) { c.save(); card.getMatrix().invert(inv); c.concat(inv); c.translate(-card.getLeft(), -card.getTop()); c.scale(D, D); c.drawBitmap(snap, 0, 0, pb); c.restore(); }
-            pt.setColor(tint); c.drawRect(b, pt); c.restore();
+            pt.setColor(tint); c.drawRect(b, pt);
+            pt.setShader(new LinearGradient(b.left, b.top, b.right, b.top + b.width() * 0.27f, new int[]{0, Color.argb(56, 255, 255, 255), 0}, new float[]{0.4f, 0.5f, 0.6f}, Shader.TileMode.CLAMP)); // the gloss
+            c.drawRect(b, pt); pt.setShader(null); c.restore();
+            pe.setStyle(Paint.Style.STROKE); pe.setStrokeWidth(Math.max(1, px(1.2f))); pe.setColor(Color.argb(72, 255, 255, 255)); // the border
+            android.graphics.RectF rf = new android.graphics.RectF(b); rf.inset(pe.getStrokeWidth() / 2, pe.getStrokeWidth() / 2); c.drawRoundRect(rf, r, r, pe);
+            c.save(); c.clipRect(b.left, b.top, b.right, b.top + r); pe.setStrokeWidth(Math.max(1, px(1.5f))); pe.setColor(Color.argb(140, 255, 255, 255)); c.drawRoundRect(rf, r, r, pe); c.restore(); // the bright top edge
         }
         @Override public void setAlpha(int a) { } @Override public void setColorFilter(android.graphics.ColorFilter f) { }
         @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
     }
+    /** The wipe: a band of light across the card (the website's shine), over the card's words too. */
+    final class Wipe extends Drawable {
+        float pos = -2; final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG); final android.graphics.Path clip = new android.graphics.Path();
+        @Override public void draw(Canvas c) {
+            if (pos <= -1.3f || pos >= 1.3f) return;
+            android.graphics.Rect b = getBounds(); float r = px(g("radius", 56)), w = b.width(), x = b.left + w * pos;
+            clip.reset(); clip.addRoundRect(new android.graphics.RectF(b), r, r, android.graphics.Path.Direction.CW);
+            c.save(); c.clipPath(clip);
+            float dx = b.height() * 0.18f; // skewed like the website's 100° band
+            p.setShader(new LinearGradient(x, b.top, x + w + dx, b.top + dx * 0.4f, new int[]{0, Color.argb(20, 255, 255, 255), Color.argb(107, 255, 255, 255), Color.argb(20, 255, 255, 255), 0}, new float[]{0.3f, 0.42f, 0.5f, 0.58f, 0.7f}, Shader.TileMode.CLAMP));
+            c.drawRect(b, p); c.restore();
+        }
+        @Override public void setAlpha(int a) { } @Override public void setColorFilter(android.graphics.ColorFilter f) { }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+    private final Wipe wipe = new Wipe();
+    private float wipeEvery = 7;
+
     /** A quick box blur, a few passes, for the small glass picture. */
     private static void blur(Bitmap b, int r) {
         int w = b.getWidth(), h = b.getHeight(); int[] p = new int[w * h], q = new int[w * h]; b.getPixels(p, 0, w, 0, 0, w, h);
@@ -298,6 +325,9 @@ public class LedActivity extends Activity {
         glass.tint = cardHex.isEmpty() ? Color.argb((int) g("tint", 72), 30, 6, 10) : alpha(col(cs, "card", Color.rgb(30, 6, 10)), 209);
         card.setBackground(new LayerDrawable(new Drawable[]{glass, sheen}));
         GradientDrawable pill = new GradientDrawable(); pill.setColor(alpha(acc, 230)); pill.setCornerRadius(px(60)); eye.setBackground(pill);
+        eye.setOutlineProvider(android.view.ViewOutlineProvider.BACKGROUND); eye.setElevation(px(16));
+        if (Build.VERSION.SDK_INT >= 28) { eye.setOutlineSpotShadowColor(acc); eye.setOutlineAmbientShadowColor(acc); }
+        wipeEvery = (float) lk.optDouble("wipe", 7);
         GradientDrawable dot = new GradientDrawable(); dot.setShape(GradientDrawable.OVAL); dot.setColor(Color.WHITE); dot.setSize((int) px(11), (int) px(11));
         eye.setCompoundDrawablesWithIntrinsicBounds(dot, null, null, null);
         title.setTextColor(ink); sub.setTextColor(alpha(ink, 205));
@@ -495,6 +525,8 @@ public class LedActivity extends Activity {
                     if (x >= 1) { tws.remove(i--); if (t.end != null) t.end.run(); }
                 }
                 if (now - lastGlass > 70 && card.getVisibility() == View.VISIBLE) { lastGlass = now; glass.snap(); } // the frosted glass behind the card
+                if (wipeEvery > 0) { long per = (long) (wipeEvery * 1000), ph = now % per; float np = ph < 1500 ? -1.3f + 2.6f * (float) (0.5 - 0.5 * Math.cos(Math.PI * ph / 1500.0)) : -2f;
+                    if (np != wipe.pos) { wipe.pos = np; card.invalidate(); } }
             } catch (Throwable ignored) { }
             android.view.Choreographer.getInstance().postFrameCallback(this);
         }

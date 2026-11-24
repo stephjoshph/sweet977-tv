@@ -103,7 +103,7 @@ public class LedActivity extends Activity {
     private final Map<String, Bitmap> pics = new HashMap<>();
     private final java.util.Set<String> loading = java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
     private int acc = Color.rgb(255, 22, 34), ink = Color.WHITE;
-    private AnimatorSet push;
+    private Glass glass;
 
     /** A soft colour glow: a radial fade (what the website draws with a 140 px blur, without its cost). */
     static final class Glow extends View {
@@ -133,6 +133,7 @@ public class LedActivity extends Activity {
         setCover("Updating", "Connecting to " + Site.host(this) + "…", 3);
         ui.post(tick);
         ui.post(poll);
+        android.view.Choreographer.getInstance().postFrameCallback(frame);
         ui.postDelayed(report, 20_000);
         checkSite();
         ui.postDelayed(new Runnable() { @Override public void run() { askAutostartOnce(); } }, 8000);
@@ -217,6 +218,43 @@ public class LedActivity extends Activity {
         applyLook(new JSONObject(), new JSONObject());
     }
 
+    /** The card's frosted glass: the background behind it, blurred (drawn small and soft, then stretched), under the card colour. */
+    final class Glass extends Drawable {
+        static final int D = 12; // 1920 × 1080 drawn at 160 × 90
+        Bitmap snap; int tint = Color.argb(72, 30, 6, 10); final Paint pb = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG), pt = new Paint(Paint.ANTI_ALIAS_FLAG);
+        final android.graphics.Path clip = new android.graphics.Path(); final android.graphics.Matrix inv = new android.graphics.Matrix();
+        void snap() {
+            int w = Math.max(1, stage.getWidth() / D), h = Math.max(1, stage.getHeight() / D);
+            if (snap == null || snap.getWidth() != w || snap.getHeight() != h) snap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(snap); c.drawColor(((android.graphics.drawable.ColorDrawable) stage.getBackground()).getColor()); c.scale(1f / D, 1f / D);
+            for (View v : new View[]{glows[0], glows[1], glows[2], bgPic, big1, big2}) {
+                if (v.getVisibility() != View.VISIBLE) continue;
+                int sc = c.save(); c.translate(v.getLeft(), v.getTop()); c.concat(v.getMatrix());
+                if (v.getAlpha() < 1) c.saveLayerAlpha(0, 0, v.getWidth(), v.getHeight(), (int) (v.getAlpha() * 255));
+                v.draw(c); c.restoreToCount(sc);
+            }
+            blur(snap, 3); invalidateSelf();
+        }
+        @Override public void draw(Canvas c) {
+            android.graphics.Rect b = getBounds(); float r = px(56);
+            clip.reset(); clip.addRoundRect(new android.graphics.RectF(b), r, r, android.graphics.Path.Direction.CW);
+            c.save(); c.clipPath(clip);
+            if (snap != null) { c.save(); card.getMatrix().invert(inv); c.concat(inv); c.translate(-card.getLeft(), -card.getTop()); c.scale(D, D); c.drawBitmap(snap, 0, 0, pb); c.restore(); }
+            pt.setColor(tint); c.drawRect(b, pt); c.restore();
+        }
+        @Override public void setAlpha(int a) { } @Override public void setColorFilter(android.graphics.ColorFilter f) { }
+        @Override public int getOpacity() { return android.graphics.PixelFormat.TRANSLUCENT; }
+    }
+    /** A quick box blur, a few passes, for the small glass picture. */
+    private static void blur(Bitmap b, int r) {
+        int w = b.getWidth(), h = b.getHeight(); int[] p = new int[w * h], q = new int[w * h]; b.getPixels(p, 0, w, 0, 0, w, h);
+        for (int pass = 0; pass < 2; pass++) {
+            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { int ra = 0, ga = 0, ba = 0, n = 0; for (int d = -r; d <= r; d++) { int xx = Math.min(w - 1, Math.max(0, x + d)), c = p[y * w + xx]; ra += (c >> 16) & 255; ga += (c >> 8) & 255; ba += c & 255; n++; } q[y * w + x] = 0xff000000 | ((ra / n) << 16) | ((ga / n) << 8) | (ba / n); }
+            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { int ra = 0, ga = 0, ba = 0, n = 0; for (int d = -r; d <= r; d++) { int yy = Math.min(h - 1, Math.max(0, y + d)), c = q[yy * w + x]; ra += (c >> 16) & 255; ga += (c >> 8) & 255; ba += c & 255; n++; } p[y * w + x] = 0xff000000 | ((ra / n) << 16) | ((ga / n) << 8) | (ba / n); }
+        }
+        b.setPixels(p, 0, w, 0, 0, w, h);
+    }
+
     private Drawable noise() { // fine film grain, tiled
         int n = 192; Bitmap b = Bitmap.createBitmap(n, n, Bitmap.Config.ARGB_8888); java.util.Random r = new java.util.Random(7);
         int[] px = new int[n * n]; for (int i = 0; i < px.length; i++) { int v = r.nextInt(256); px[i] = Color.argb(r.nextInt(34), v, v, v); }
@@ -230,8 +268,7 @@ public class LedActivity extends Activity {
     private LinearLayout.LayoutParams wrap(float top) { LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(-2, -2); p.gravity = Gravity.CENTER_HORIZONTAL; p.topMargin = (int) px(top); return p; }
 
     /* ── colours and settings from Studio → LED screen (Glass) ── */
-    private ObjectAnimator sway;
-    private final ObjectAnimator[] drifts = new ObjectAnimator[3];
+    private float motionSpeed = 1, motionSway = 110;
     private String lookSig = "";
     private void applyLook(JSONObject cs, JSONObject lk) {
         String sig = cs.toString() + lk.toString(); if (sig.equals(lookSig)) return; lookSig = sig;
@@ -248,27 +285,18 @@ public class LedActivity extends Activity {
         big1.setAlpha(0.92f); big1.invalidate();
         // the glass card: a light sheen over the card colour, a fine light edge
         String cardHex = cs.optString("card", "");
-        GradientDrawable base = new GradientDrawable(); base.setCornerRadius(px(56));
-        base.setColor(cardHex.isEmpty() ? Color.argb(110, 30, 6, 10) : alpha(col(cs, "card", Color.rgb(30, 6, 10)), 209));
         GradientDrawable sheen = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{Color.argb(51, 255, 255, 255), Color.argb(10, 255, 255, 255), Color.argb(18, 255, 255, 255)});
         sheen.setCornerRadius(px(56)); sheen.setStroke((int) Math.max(1, px(1.6f)), Color.argb(46, 255, 255, 255));
-        card.setBackground(new LayerDrawable(new Drawable[]{base, sheen}));
+        if (glass == null) glass = new Glass();
+        glass.tint = cardHex.isEmpty() ? Color.argb(72, 30, 6, 10) : alpha(col(cs, "card", Color.rgb(30, 6, 10)), 209);
+        card.setBackground(new LayerDrawable(new Drawable[]{glass, sheen}));
         GradientDrawable pill = new GradientDrawable(); pill.setColor(alpha(acc, 230)); pill.setCornerRadius(px(60)); eye.setBackground(pill);
         GradientDrawable dot = new GradientDrawable(); dot.setShape(GradientDrawable.OVAL); dot.setColor(Color.WHITE); dot.setSize((int) px(11), (int) px(11));
         eye.setCompoundDrawablesWithIntrinsicBounds(dot, null, null, null);
         title.setTextColor(ink); sub.setTextColor(alpha(ink, 205));
         // motion: the giant words sway; the glows drift (Studio → Sway and Speed)
         float speed = (float) Math.max(0.2, Math.min(4, lk.optDouble("speed", 1))), sw = (float) lk.optDouble("sway", 110);
-        if (sway != null) sway.cancel();
-        sway = ObjectAnimator.ofFloat(big1, "translationX", px(sw), -px(sw)); sway.setDuration((long) (30_000 / speed)); sway.setRepeatCount(ValueAnimator.INFINITE); sway.setRepeatMode(ValueAnimator.REVERSE); sway.setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator()); sway.start();
-        float[][] mv = {{380, -260, 26}, {-300, 220, 32}, {260, -200, 21}};
-        for (int i = 0; i < 3; i++) {
-            if (drifts[i] != null) drifts[i].cancel();
-            android.animation.PropertyValuesHolder hx = android.animation.PropertyValuesHolder.ofFloat("translationX", 0, px(mv[i][0])), hy = android.animation.PropertyValuesHolder.ofFloat("translationY", 0, px(mv[i][1])),
-                sx = android.animation.PropertyValuesHolder.ofFloat("scaleX", 1f, 1.2f), sy = android.animation.PropertyValuesHolder.ofFloat("scaleY", 1f, 1.2f);
-            drifts[i] = ObjectAnimator.ofPropertyValuesHolder(glows[i], hx, hy, sx, sy); drifts[i].setDuration((long) (mv[i][2] * 1000 / speed));
-            drifts[i].setRepeatCount(ValueAnimator.INFINITE); drifts[i].setRepeatMode(ValueAnimator.REVERSE); drifts[i].setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator()); drifts[i].start();
-        }
+        motionSpeed = speed; motionSway = sw;
         grain.setVisibility(lk.optBoolean("grain", true) ? View.VISIBLE : View.GONE); grain.setAlpha((float) Math.max(0, Math.min(1, lk.optDouble("grainK", 0.8))) * 0.9f);
         // a picture instead of the giant words (Studio → Background picture: position, size, opacity)
         String bgu = lk.optString("bgImg", "");
@@ -291,7 +319,7 @@ public class LedActivity extends Activity {
         coverBar.setVisibility(pct < 0 ? View.GONE : View.VISIBLE); if (pct >= 0) coverBar.setProgress(pct);
         cover.setAlpha(1); cover.setVisibility(View.VISIBLE);
     }
-    private void hideCover() { if (cover.getVisibility() == View.VISIBLE) cover.animate().alpha(0).setDuration(700).withEndAction(new Runnable() { @Override public void run() { cover.setVisibility(View.GONE); cover.setAlpha(1); } }).start(); }
+    private void hideCover() { if (cover.getVisibility() == View.VISIBLE) tween(cover, A, 1, 0, 0, 700, LIN, new Runnable() { @Override public void run() { cover.setVisibility(View.GONE); cover.setAlpha(1); } }); }
 
     /* ── the website, every second: "anything changed?" (a tiny answer when not) ── */
     private volatile boolean asking = false;
@@ -403,24 +431,63 @@ public class LedActivity extends Activity {
         final JSONObject it = items.get(idx);
         slideEnds = SystemClock.elapsedRealtime() + Math.max(3, it.optInt("dur", 10)) * 1000L;
         if (card.getVisibility() != View.VISIBLE) { enter(it); return; }
-        card.animate().alpha(0).scaleX(0.96f).scaleY(0.96f).translationY(px(-24)).setDuration(420).setInterpolator(new android.view.animation.AccelerateInterpolator()).withEndAction(new Runnable() { @Override public void run() { enter(it); } }).start();
+        stopTweens(card);
+        tween(card, A, card.getAlpha(), 0, 0, 420, IN, null); tween(card, S, card.getScaleX(), 0.96f, 0, 420, IN, null);
+        tween(card, Y, card.getTranslationY(), px(-24), 0, 420, IN, new Runnable() { @Override public void run() { enter(it); } });
     }
 
     /* the glass card comes in; then its parts rise in one after another (the website's entrance) */
     private void enter(JSONObject it) {
-        if (push != null) push.cancel();
+        stopTweens(card);
         show(it);
         card.setVisibility(View.VISIBLE); card.setAlpha(0); card.setScaleX(0.9f); card.setScaleY(0.9f); card.setTranslationY(px(50));
-        card.animate().alpha(1).scaleX(1).scaleY(1).translationY(0).setDuration(1150).setInterpolator(new DecelerateInterpolator(2.2f)).withEndAction(new Runnable() { @Override public void run() {
+        tween(card, A, 0, 1, 0, 1150, OUT, null); tween(card, Y, px(50), 0, 0, 1150, OUT, null);
+        tween(card, S, 0.9f, 1, 0, 1150, OUT, new Runnable() { @Override public void run() {
             long d = Math.max(1000, slideEnds - SystemClock.elapsedRealtime());
-            push = new AnimatorSet(); push.playTogether(ObjectAnimator.ofFloat(card, "scaleX", 1f, 1.035f), ObjectAnimator.ofFloat(card, "scaleY", 1f, 1.035f)); // a slow push in
-            push.setDuration(d); push.setInterpolator(new LinearInterpolator()); push.start();
-        } }).start();
+            tween(card, S, 1f, 1.035f, 0, d, LIN, null); // a slow push in
+        } });
         int n = 0;
         for (int i = 0; i < card.getChildCount(); i++) { View v = card.getChildAt(i); if (v.getVisibility() != View.VISIBLE) continue; rise(v, 250 + n * 90); n++; }
         for (int i = 0; i < rows.getChildCount(); i++) rise(rows.getChildAt(i), 420 + i * 110);
     }
-    private void rise(View v, long delay) { v.setAlpha(0); v.setTranslationY(px(40)); v.animate().alpha(1).translationY(0).setStartDelay(delay).setDuration(1000).setInterpolator(new DecelerateInterpolator(2.4f)).start(); }
+    private void rise(View v, long delay) { stopTweens(v); v.setAlpha(0); v.setTranslationY(px(40)); tween(v, A, 0, 1, delay, 1000, OUT, null); tween(v, Y, px(40), 0, delay, 1000, OUT, null); }
+
+    /* ── motion, drawn frame by frame by the app itself: it runs even when the TV has Android's animations turned off ── */
+    static final int A = 0, X = 1, Y = 2, S = 3, IN = 0, OUT = 1, LIN = 2;
+    static final class Tw { View v; int prop, ease; float a, b; long t0, dur; Runnable end; }
+    private final List<Tw> tws = new ArrayList<>();
+    private void tween(View v, int prop, float from, float to, long delay, long dur, int ease, Runnable end) {
+        Tw t = new Tw(); t.v = v; t.prop = prop; t.a = from; t.b = to; t.t0 = SystemClock.uptimeMillis() + delay; t.dur = Math.max(1, dur); t.ease = ease; t.end = end;
+        for (int i = tws.size() - 1; i >= 0; i--) { Tw o = tws.get(i); if (o.v == v && o.prop == prop) tws.remove(i); }
+        tws.add(t);
+    }
+    private void stopTweens(View v) { for (int i = tws.size() - 1; i >= 0; i--) if (tws.get(i).v == v) tws.remove(i); }
+    private static void set(View v, int prop, float x) { if (prop == A) v.setAlpha(x); else if (prop == X) v.setTranslationX(x); else if (prop == Y) v.setTranslationY(x); else { v.setScaleX(x); v.setScaleY(x); } }
+    private static float ease(int e, float x) { return e == IN ? x * x : e == OUT ? 1 - (float) Math.pow(1 - x, 3) : x; }
+
+    private long lastGlass = 0;
+    private final android.view.Choreographer.FrameCallback frame = new android.view.Choreographer.FrameCallback() {
+        @Override public void doFrame(long ns) {
+            long now = SystemClock.uptimeMillis();
+            try {
+                // the background: the glows drift and grow, the giant words sway (Studio → Sway and Speed)
+                float[][] mv = {{380, -260, 26}, {-300, 220, 32}, {260, -200, 21}};
+                for (int i = 0; i < 3; i++) { float e = wave(now, mv[i][2] * 1000 / motionSpeed); glows[i].setTranslationX(px(mv[i][0]) * e); glows[i].setTranslationY(px(mv[i][1]) * e); glows[i].setScaleX(1 + 0.2f * e); glows[i].setScaleY(1 + 0.2f * e); }
+                big1.setTranslationX(px(motionSway) * (1 - 2 * wave(now, 30_000 / motionSpeed)));
+                bgPic.setTranslationX(big1.getTranslationX());
+                // the moving parts
+                for (int i = 0; i < tws.size(); i++) {
+                    Tw t = tws.get(i); if (now < t.t0) { if (t.prop == A) set(t.v, A, t.a); continue; }
+                    float x = Math.min(1, (now - t.t0) / (float) t.dur); set(t.v, t.prop, t.a + (t.b - t.a) * ease(t.ease, x));
+                    if (x >= 1) { tws.remove(i--); if (t.end != null) t.end.run(); }
+                }
+                if (now - lastGlass > 70 && card.getVisibility() == View.VISIBLE) { lastGlass = now; glass.snap(); } // the frosted glass behind the card
+            } catch (Throwable ignored) { }
+            android.view.Choreographer.getInstance().postFrameCallback(this);
+        }
+    };
+    /** 0 → 1 → 0, smoothly, once every 2 × period (the website's "alternate" ease-in-out). */
+    private static float wave(long now, float period) { double ph = (now % (long) (2 * period)) / (double) period; return (float) ((1 - Math.cos(Math.PI * ph)) / 2); }
 
     private void refresh(JSONObject it) { if (started && card.getVisibility() == View.VISIBLE) update(it); }
     /** New content for the item on screen, without the entrance. */

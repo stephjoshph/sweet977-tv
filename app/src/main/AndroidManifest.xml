@@ -22,8 +22,9 @@
         android:largeHeap="true"
         android:theme="@style/Tv">
 
+        <!-- the LED screen, drawn by the app itself (no web browser): runs on small TVs -->
         <activity
-            android:name=".MainActivity"
+            android:name=".LedActivity"
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="landscape"
@@ -34,6 +35,13 @@
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
         </activity>
+        <!-- the earlier web-page version, kept for reference (not opened) -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:screenOrientation="landscape"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode|density" />
 
         <receiver
             android:name=".BootReceiver"

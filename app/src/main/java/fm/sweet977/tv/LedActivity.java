@@ -104,6 +104,11 @@ public class LedActivity extends Activity {
     private final java.util.Set<String> loading = java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
     private int acc = Color.rgb(255, 22, 34), ink = Color.WHITE;
     private Glass glass;
+    private JSONObject G = new JSONObject();
+    private float g(String k, double d) { return (float) G.optDouble(k, d); }
+    private TextView verLine;
+    private long lastCmdReport = 0;
+    private String tvId() { String id = prefs.getString("tvId", ""); if (id.isEmpty()) { id = java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16); prefs.edit().putString("tvId", id).apply(); } return id; }
 
     /** A soft colour glow: a radial fade (what the website draws with a 140 px blur, without its cost). */
     static final class Glow extends View {
@@ -196,7 +201,9 @@ public class LedActivity extends Activity {
 
         LinearLayout lock = new LinearLayout(this); lock.setGravity(Gravity.CENTER); lock.setBackgroundColor(Color.BLACK);
         lockLogo = new ImageView(this); lockLogo.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        lock.setOrientation(LinearLayout.VERTICAL);
         lock.addView(lockLogo, new LinearLayout.LayoutParams((int) px(760), (int) px(460)));
+        verLine = text(semi, 26, Color.argb(150, 255, 255, 255)); verLine.setLetterSpacing(0.04f); lock.addView(verLine, wrap(34)); // App 1.0.20 · Website 261124.07
         lockView = lock; lockView.setVisibility(View.GONE);
         root.addView(lockView, new FrameLayout.LayoutParams(-1, -1));
         blackView = new View(this); blackView.setBackgroundColor(Color.BLACK); blackView.setVisibility(View.GONE);
@@ -233,10 +240,10 @@ public class LedActivity extends Activity {
                 if (v.getAlpha() < 1) c.saveLayerAlpha(0, 0, v.getWidth(), v.getHeight(), (int) (v.getAlpha() * 255));
                 v.draw(c); c.restoreToCount(sc);
             }
-            blur(snap, 3); invalidateSelf();
+            blur(snap, Math.max(1, Math.min(8, (int) g("blur", 3)))); invalidateSelf();
         }
         @Override public void draw(Canvas c) {
-            android.graphics.Rect b = getBounds(); float r = px(56);
+            android.graphics.Rect b = getBounds(); float r = px(g("radius", 56));
             clip.reset(); clip.addRoundRect(new android.graphics.RectF(b), r, r, android.graphics.Path.Direction.CW);
             c.save(); c.clipPath(clip);
             if (snap != null) { c.save(); card.getMatrix().invert(inv); c.concat(inv); c.translate(-card.getLeft(), -card.getTop()); c.scale(D, D); c.drawBitmap(snap, 0, 0, pb); c.restore(); }
@@ -271,10 +278,10 @@ public class LedActivity extends Activity {
     private float motionSpeed = 1, motionSway = 110;
     private String lookSig = "";
     private void applyLook(JSONObject cs, JSONObject lk) {
-        String sig = cs.toString() + lk.toString(); if (sig.equals(lookSig)) return; lookSig = sig;
+        String sig = cs.toString() + lk.toString() + G.toString(); if (sig.equals(lookSig)) return; lookSig = sig;
         int bg = col(cs, "bg", Color.rgb(7, 4, 5)); acc = col(cs, "acc", Color.rgb(255, 22, 34)); ink = col(cs, "ink", Color.WHITE);
         stage.setBackgroundColor(bg);
-        int[] gc = {alpha(acc, 230), alpha(col(cs, "b2", Color.rgb(165, 13, 23)), 217), alpha(col(cs, "b3", Color.rgb(91, 7, 16)), 204)};
+        float go = g("glowOp", 0.9); int[] gc = {alpha(acc, (int) (255 * go)), alpha(col(cs, "b2", Color.rgb(165, 13, 23)), (int) (241 * go)), alpha(col(cs, "b3", Color.rgb(91, 7, 16)), (int) (227 * go))};
         for (int i = 0; i < 3; i++) { glows[i].color = gc[i]; glows[i].invalidate(); }
         // the giant words: a red gradient across them (the website's colours)
         JSONArray bc = cs.optJSONArray("big"); final int[] cols = new int[5]; String[] def = {"#ff2a36", "#ff1b28", "#4a2a2e", "#3a2326", "#8e1a22"};
@@ -282,22 +289,26 @@ public class LedActivity extends Activity {
         big1.addOnLayoutChangeListener(new View.OnLayoutChangeListener() { @Override public void onLayoutChange(View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) {
             big1.getPaint().setShader(new LinearGradient(0, 0, Math.max(1, r - l), (r - l) * 0.087f, cols, new float[]{0f, .26f, .52f, .78f, 1f}, Shader.TileMode.CLAMP)); big1.invalidate(); } });
         big1.getPaint().setShader(new LinearGradient(0, 0, Math.max(1, big1.getWidth()), 0, cols, new float[]{0f, .26f, .52f, .78f, 1f}, Shader.TileMode.CLAMP));
-        big1.setAlpha(0.92f); big1.invalidate();
+        big1.setAlpha(g("bigOp", 0.92)); big1.invalidate();
         // the glass card: a light sheen over the card colour, a fine light edge
         String cardHex = cs.optString("card", "");
         GradientDrawable sheen = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{Color.argb(51, 255, 255, 255), Color.argb(10, 255, 255, 255), Color.argb(18, 255, 255, 255)});
-        sheen.setCornerRadius(px(56)); sheen.setStroke((int) Math.max(1, px(1.6f)), Color.argb(46, 255, 255, 255));
+        sheen.setCornerRadius(px(g("radius", 56))); sheen.setStroke((int) Math.max(1, px(1.6f)), Color.argb(46, 255, 255, 255));
         if (glass == null) glass = new Glass();
-        glass.tint = cardHex.isEmpty() ? Color.argb(72, 30, 6, 10) : alpha(col(cs, "card", Color.rgb(30, 6, 10)), 209);
+        glass.tint = cardHex.isEmpty() ? Color.argb((int) g("tint", 72), 30, 6, 10) : alpha(col(cs, "card", Color.rgb(30, 6, 10)), 209);
         card.setBackground(new LayerDrawable(new Drawable[]{glass, sheen}));
         GradientDrawable pill = new GradientDrawable(); pill.setColor(alpha(acc, 230)); pill.setCornerRadius(px(60)); eye.setBackground(pill);
         GradientDrawable dot = new GradientDrawable(); dot.setShape(GradientDrawable.OVAL); dot.setColor(Color.WHITE); dot.setSize((int) px(11), (int) px(11));
         eye.setCompoundDrawablesWithIntrinsicBounds(dot, null, null, null);
         title.setTextColor(ink); sub.setTextColor(alpha(ink, 205));
+        size(big1, g("big", 760)); size(big2, g("big2", 300)); big2.setTextColor(Color.argb((int) g("big2Op", 18), 255, 255, 255));
+        FrameLayout.LayoutParams b1 = (FrameLayout.LayoutParams) big1.getLayoutParams(); b1.leftMargin = (int) px(g("bigX", 24)); b1.topMargin = (int) px(g("bigY", -60)); big1.setLayoutParams(b1);
+        card.setPadding((int) px(g("padX", 76)), (int) px(g("padY", 56)), (int) px(g("padX", 76)), (int) px(g("padY", 56) + 8));
+        for (int i = 1; i < card.getChildCount(); i++) { LinearLayout.LayoutParams lp = (LinearLayout.LayoutParams) card.getChildAt(i).getLayoutParams(); if (card.getChildAt(i) != rows) { lp.topMargin = (int) px(g("gap", 26)); card.getChildAt(i).setLayoutParams(lp); } }
         // motion: the giant words sway; the glows drift (Studio → Sway and Speed)
         float speed = (float) Math.max(0.2, Math.min(4, lk.optDouble("speed", 1))), sw = (float) lk.optDouble("sway", 110);
         motionSpeed = speed; motionSway = sw;
-        grain.setVisibility(lk.optBoolean("grain", true) ? View.VISIBLE : View.GONE); grain.setAlpha((float) Math.max(0, Math.min(1, lk.optDouble("grainK", 0.8))) * 0.9f);
+        grain.setVisibility(lk.optBoolean("grain", true) ? View.VISIBLE : View.GONE); grain.setAlpha((float) Math.max(0, Math.min(1, lk.optDouble("grainK", 0.8))) * g("grain", 0.9));
         // a picture instead of the giant words (Studio → Background picture: position, size, opacity)
         String bgu = lk.optString("bgImg", "");
         if (!bgu.equals(shownBg)) {
@@ -329,7 +340,7 @@ public class LedActivity extends Activity {
                 asking = true;
                 final String since = SystemClock.elapsedRealtime() - lastFull > 10 * 60_000 ? "" : feedH; // a full copy at least every 10 minutes
                 net.execute(new Runnable() { @Override public void run() {
-                    final JSONObject j = get(Site.get(LedActivity.this) + "api/led.php" + (since.isEmpty() ? "" : "?since=" + since));
+                    final JSONObject j = get(Site.get(LedActivity.this) + "api/led.php?tv=" + tvId() + (since.isEmpty() ? "" : "&since=" + since));
                     ui.post(new Runnable() { @Override public void run() { asking = false; onFeed(j); } });
                 } });
             }
@@ -355,9 +366,10 @@ public class LedActivity extends Activity {
             return;
         }
         lastFeedOk = SystemClock.elapsedRealtime();
+        if (j.optBoolean("cmd") && SystemClock.elapsedRealtime() - lastCmdReport > 8000) { lastCmdReport = SystemClock.elapsedRealtime(); ui.removeCallbacks(report); ui.post(report); } // the developer asked something
         if (j.optBoolean("same")) return; // nothing changed
         feedH = j.optString("h", ""); lastFull = lastFeedOk; feed = j;
-        JSONObject cs = j.optJSONObject("colors"), lk = j.optJSONObject("look");
+        JSONObject cs = j.optJSONObject("colors"), lk = j.optJSONObject("look"); if (j.optJSONObject("g") != null) G = j.optJSONObject("g");
         applyLook(cs == null ? new JSONObject() : cs, lk == null ? new JSONObject() : lk);
         big1.setText(j.optString("big", "97.7")); big2.setText(j.optString("big2", "FM"));
         String lg = j.optString("logo", "");
@@ -369,6 +381,7 @@ public class LedActivity extends Activity {
         if (idx >= 0 && started) update(items.get(idx)); // new words for the item on screen show right away
         if (items.isEmpty()) card.setVisibility(View.INVISIBLE);
         lockView.setVisibility(j.optBoolean("lock") ? View.VISIBLE : View.GONE);
+        verLine.setText("App " + Updater.currentName(this) + "  ·  Website " + j.optString("site", "?"));
         blackView.setVisibility(j.optBoolean("black") ? View.VISIBLE : View.GONE);
         playVideo(j.optString("video", ""));
         tidy(j);
@@ -432,8 +445,8 @@ public class LedActivity extends Activity {
         slideEnds = SystemClock.elapsedRealtime() + Math.max(3, it.optInt("dur", 10)) * 1000L;
         if (card.getVisibility() != View.VISIBLE) { enter(it); return; }
         stopTweens(card);
-        tween(card, A, card.getAlpha(), 0, 0, 420, IN, null); tween(card, S, card.getScaleX(), 0.96f, 0, 420, IN, null);
-        tween(card, Y, card.getTranslationY(), px(-24), 0, 420, IN, new Runnable() { @Override public void run() { enter(it); } });
+        long ot = (long) g("out", 420); tween(card, A, card.getAlpha(), 0, 0, ot, IN, null); tween(card, S, card.getScaleX(), 0.96f, 0, ot, IN, null);
+        tween(card, Y, card.getTranslationY(), px(-24), 0, ot, IN, new Runnable() { @Override public void run() { enter(it); } });
     }
 
     /* the glass card comes in; then its parts rise in one after another (the website's entrance) */
@@ -441,16 +454,16 @@ public class LedActivity extends Activity {
         stopTweens(card);
         show(it);
         card.setVisibility(View.VISIBLE); card.setAlpha(0); card.setScaleX(0.9f); card.setScaleY(0.9f); card.setTranslationY(px(50));
-        tween(card, A, 0, 1, 0, 1150, OUT, null); tween(card, Y, px(50), 0, 0, 1150, OUT, null);
-        tween(card, S, 0.9f, 1, 0, 1150, OUT, new Runnable() { @Override public void run() {
+        long et = (long) g("enter", 1150); tween(card, A, 0, 1, 0, et, OUT, null); tween(card, Y, px(50), 0, 0, et, OUT, null);
+        tween(card, S, 0.9f, 1, 0, et, OUT, new Runnable() { @Override public void run() {
             long d = Math.max(1000, slideEnds - SystemClock.elapsedRealtime());
-            tween(card, S, 1f, 1.035f, 0, d, LIN, null); // a slow push in
+            tween(card, S, 1f, g("push", 1.035), 0, d, LIN, null); // a slow push in
         } });
         int n = 0;
-        for (int i = 0; i < card.getChildCount(); i++) { View v = card.getChildAt(i); if (v.getVisibility() != View.VISIBLE) continue; rise(v, 250 + n * 90); n++; }
+        for (int i = 0; i < card.getChildCount(); i++) { View v = card.getChildAt(i); if (v.getVisibility() != View.VISIBLE) continue; rise(v, 250 + n * (long) g("riseGap", 90)); n++; }
         for (int i = 0; i < rows.getChildCount(); i++) rise(rows.getChildAt(i), 420 + i * 110);
     }
-    private void rise(View v, long delay) { stopTweens(v); v.setAlpha(0); v.setTranslationY(px(40)); tween(v, A, 0, 1, delay, 1000, OUT, null); tween(v, Y, px(40), 0, delay, 1000, OUT, null); }
+    private void rise(View v, long delay) { stopTweens(v); v.setAlpha(0); v.setTranslationY(px(40)); long rt = (long) g("rise", 1000); tween(v, A, 0, 1, delay, rt, OUT, null); tween(v, Y, px(40), 0, delay, rt, OUT, null); }
 
     /* ── motion, drawn frame by frame by the app itself: it runs even when the TV has Android's animations turned off ── */
     static final int A = 0, X = 1, Y = 2, S = 3, IN = 0, OUT = 1, LIN = 2;
@@ -502,10 +515,10 @@ public class LedActivity extends Activity {
         String t = it.optString("type"), e = it.optString("eye"), b = it.optString("big"), s = it.optString("sub"), u = it.optString("img");
         float kk = (float) Math.max(0.4, Math.min(2.5, it.optDouble("k", 1)));
         rows.removeAllViews(); pic.setVisibility(View.GONE); pic.setImageDrawable(null);
-        title.setTypeface(anton); title.setAllCaps(true); title.setMaxLines(4); size(title, fit(b, 230) * kk);
-        setText(eye, e); setText(title, b); setText(sub, s); size(sub, 40 * Math.min(1.3f, kk));
+        title.setTypeface(anton); title.setAllCaps(true); title.setMaxLines(4); size(title, fit(b, (int) g("title", 230)) * kk);
+        setText(eye, e); setText(title, b); setText(sub, s); size(sub, g("sub", 40) * Math.min(1.3f, kk)); size(eye, g("eye", 24));
         if (t.equals("clock") || t.equals("countdown")) live(it);
-        if (t.equals("poll") || t.equals("qr")) size(title, Math.min(104, fit(b, 104)) * kk); // the poll's question: the mid size
+        if (t.equals("poll") || t.equals("qr")) size(title, Math.min(g("mid", 104), fit(b, (int) g("mid", 104))) * kk); // the poll's question: the mid size
         if (t.equals("image") || t.equals("logo") || t.equals("sponsor")) { title.setVisibility(View.GONE); sub.setVisibility(View.GONE); if (!t.equals("sponsor")) eye.setVisibility(View.GONE); }
         if (t.equals("sponsor")) { JSONArray im = it.optJSONArray("imgs"); if (im != null && im.length() > 0) u = im.optString((int) ((System.currentTimeMillis() / 4000) % im.length())); }
         if (!u.isEmpty()) {
@@ -533,11 +546,11 @@ public class LedActivity extends Activity {
         if (t.equals("clock")) {
             SimpleDateFormat d = new SimpleDateFormat("EEEE", Locale.US), h = new SimpleDateFormat("h:mm", Locale.US), a = new SimpleDateFormat("a", Locale.US), dt = new SimpleDateFormat("MMMM d, yyyy", Locale.US);
             d.setTimeZone(tz); h.setTimeZone(tz); a.setTimeZone(tz); dt.setTimeZone(tz); Date n = new Date();
-            setText(eye, d.format(n)); title.setText(h.format(n) + " " + a.format(n)); size(title, 230); title.setVisibility(View.VISIBLE); setText(sub, dt.format(n));
+            setText(eye, d.format(n)); title.setText(h.format(n) + " " + a.format(n)); size(title, g("title", 230)); title.setVisibility(View.VISIBLE); setText(sub, dt.format(n));
         } else if (t.equals("countdown")) {
             long ms = Math.max(0, it.optLong("at") - System.currentTimeMillis());
             long hh = ms / 3_600_000, mm = ms % 3_600_000 / 60_000, ss = ms % 60_000 / 1000;
-            setText(eye, it.optString("eye", "Countdown")); title.setText((hh > 0 ? hh + ":" : "") + String.format(Locale.US, "%02d:%02d", mm, ss)); size(title, 230); title.setVisibility(View.VISIBLE); setText(sub, "");
+            setText(eye, it.optString("eye", "Countdown")); title.setText((hh > 0 ? hh + ":" : "") + String.format(Locale.US, "%02d:%02d", mm, ss)); size(title, g("title", 230)); title.setVisibility(View.VISIBLE); setText(sub, "");
         }
     }
 
@@ -547,12 +560,12 @@ public class LedActivity extends Activity {
     private View row(JSONObject r, String type, int i, float kk) {
         if (r == null) r = new JSONObject();
         LinearLayout l = new LinearLayout(this); l.setOrientation(LinearLayout.HORIZONTAL); l.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams((int) px(type.equals("social") ? 900 : 1200), -2); p.gravity = Gravity.CENTER_HORIZONTAL; p.topMargin = (int) px(i == 0 ? 30 : type.equals("poll") ? 16 : 22);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams((int) px(type.equals("social") ? 900 : g("row", 1200)), -2); p.gravity = Gravity.CENTER_HORIZONTAL; p.topMargin = (int) px(i == 0 ? 30 : type.equals("poll") ? 16 : 22);
         l.setLayoutParams(p);
         if (type.equals("social")) { // the network's name small, the handle big
             LinearLayout c = new LinearLayout(this); c.setOrientation(LinearLayout.VERTICAL); c.setGravity(Gravity.CENTER_HORIZONTAL);
             TextView a = text(bold, 24, Color.rgb(255, 106, 90)); a.setAllCaps(true); a.setLetterSpacing(0.2f); a.setText(r.optString("sub")); c.addView(a, wrap(0));
-            TextView b = text(anton, 92 * kk, ink); b.setText(r.optString("title")); c.addView(b, wrap(6));
+            TextView b = text(anton, g("social", 92) * kk, ink); b.setText(r.optString("title")); c.addView(b, wrap(6));
             l.setGravity(Gravity.CENTER); l.addView(c, new LinearLayout.LayoutParams(-1, -2)); return l;
         }
         l.setPadding((int) px(34), (int) px(18), (int) px(34), (int) px(18));
@@ -561,17 +574,17 @@ public class LedActivity extends Activity {
             GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{alpha(acc, 110), alpha(acc, 110), Color.argb(18, 255, 255, 255), Color.argb(18, 255, 255, 255)});
             bg.setCornerRadius(px(26)); bg.setStroke((int) Math.max(1, px(1.5f)), Color.argb(40, 255, 255, 255));
             l.setBackground(pct > 0 ? new LayerDrawable(new Drawable[]{plain(), clip(pct)}) : plain());
-            TextView a = text(semi, 40 * kk, ink); a.setSingleLine(true); a.setEllipsize(TextUtils.TruncateAt.END); a.setText(r.optString("title")); l.addView(a, new LinearLayout.LayoutParams(0, -2, 1));
-            TextView b = text(bold, 40 * kk, ink); b.setText(pct + "%"); l.addView(b);
+            TextView a = text(semi, g("poll", 40) * kk, ink); a.setSingleLine(true); a.setEllipsize(TextUtils.TruncateAt.END); a.setText(r.optString("title")); l.addView(a, new LinearLayout.LayoutParams(0, -2, 1));
+            TextView b = text(bold, g("poll", 40) * kk, ink); b.setText(pct + "%"); l.addView(b);
             return l;
         }
         GradientDrawable bg = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{alpha(acc, 89), Color.argb(10, 255, 255, 255)});
         bg.setCornerRadius(px(34)); bg.setStroke((int) Math.max(1, px(1.5f)), Color.argb(41, 255, 255, 255)); l.setBackground(bg);
         String n = r.optString("n");
-        if (!n.isEmpty()) { TextView num = text(anton, 120 * kk, Color.WHITE); num.setGravity(Gravity.CENTER); num.setText(n); l.addView(num, new LinearLayout.LayoutParams((int) px(110), -2)); }
+        if (!n.isEmpty()) { TextView num = text(anton, g("rank", 120) * kk, Color.WHITE); num.setGravity(Gravity.CENTER); num.setText(n); l.addView(num, new LinearLayout.LayoutParams((int) px(110), -2)); }
         LinearLayout tx = new LinearLayout(this); tx.setOrientation(LinearLayout.VERTICAL); tx.setPadding((int) px(34), 0, 0, 0);
-        TextView a = text(anton, 72 * kk, ink); a.setAllCaps(true); a.setSingleLine(true); a.setEllipsize(TextUtils.TruncateAt.END); a.setText(r.optString("title")); tx.addView(a);
-        String sb = r.optString("sub"); if (!sb.isEmpty()) { TextView b = text(semi, 30 * kk, alpha(ink, 205)); b.setSingleLine(true); b.setText(sb); LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-2, -2); bp.topMargin = (int) px(6); tx.addView(b, bp); }
+        TextView a = text(anton, g("rowTitle", 72) * kk, ink); a.setAllCaps(true); a.setSingleLine(true); a.setEllipsize(TextUtils.TruncateAt.END); a.setText(r.optString("title")); tx.addView(a);
+        String sb = r.optString("sub"); if (!sb.isEmpty()) { TextView b = text(semi, g("rowSub", 30) * kk, alpha(ink, 205)); b.setSingleLine(true); b.setText(sb); LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(-2, -2); bp.topMargin = (int) px(6); tx.addView(b, bp); }
         l.addView(tx, new LinearLayout.LayoutParams(0, -2, 1));
         return l;
     }
@@ -667,6 +680,8 @@ public class LedActivity extends Activity {
                         JSONObject r = new JSONObject(new String(Store.readAll(c.getInputStream()), "UTF-8")); JSONArray cmds = r.optJSONArray("cmds"); JSONArray done = new JSONArray();
                         if (cmds != null) for (int i = 0; i < cmds.length(); i++) { JSONObject cm = cmds.optJSONObject(i); if (cm == null) continue;
                             if ("clear".equals(cm.optString("act"))) { if (all != null) for (File f : all) f.delete(); }
+                            else if ("update".equals(cm.optString("act"))) { final int v = Updater.check(LedActivity.this);
+                                ui.post(new Runnable() { @Override public void run() { if (Updater.ready > Updater.current(LedActivity.this)) { if (!Updater.install(LedActivity.this)) Toast.makeText(LedActivity.this, "Allow installs for Sweet 97.7 LED, then press Update again in Studio.", Toast.LENGTH_LONG).show(); } } }); }
                             else if ("del".equals(cm.optString("act"))) { if (all != null) for (File f : all) if (f.getName().startsWith(cm.optString("f") + ".") || f.getName().equals(cm.optString("f"))) f.delete(); }
                             done.put(cm.optString("id")); }
                         prefs.edit().putString("done", done.toString()).apply();

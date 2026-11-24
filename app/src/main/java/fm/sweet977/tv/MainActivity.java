@@ -367,7 +367,11 @@ public class MainActivity extends Activity {
         long now = SystemClock.elapsedRealtime();
         if (now - strayAt > 120_000) strays = 0;
         strayAt = now;
-        if (++strays > 3) return false;
+        if (++strays > 3) { // it keeps leaving: never leave another page on the wall; cover it and try again in a minute
+            setCover("Updating", "Reconnecting to " + Site.host(this) + "…", 2);
+            ui.postDelayed(new Runnable() { @Override public void run() { strays = 0; web.loadUrl(Site.start(MainActivity.this)); } }, 60_000);
+            return true;
+        }
         web.loadUrl(Site.start(MainActivity.this));
         return true;
     }

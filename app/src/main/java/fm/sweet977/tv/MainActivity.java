@@ -174,9 +174,25 @@ public class MainActivity extends Activity {
     private final Runnable hideIfQuiet = new Runnable() {
         @Override
         public void run() {
-            if (!pageCtl && loaded && !failed) cover.setVisibility(View.GONE);
+            if (!pageCtl && loaded && !failed) {
+                int v = chromeVersion();
+                if (v > 0 && v < MIN_CHROME) { // the LED page never started: this TV's web engine is too old for it
+                    setCover("Update needed", "This TV's web engine (Android System WebView) is version " + v + ". The LED screen needs " + MIN_CHROME + " or newer. "
+                        + "Open the Play Store on the TV, search for Android System WebView, update it, then restart this app.", 0);
+                    return;
+                }
+                cover.setVisibility(View.GONE);
+            }
         }
     };
+    static final int MIN_CHROME = 69;
+    /** The web engine's version (from its user agent), or 0 if unknown. */
+    private int chromeVersion() {
+        try {
+            java.util.regex.Matcher m = java.util.regex.Pattern.compile("Chrome/(\\d+)").matcher(web.getSettings().getUserAgentString());
+            return m.find() ? Integer.parseInt(m.group(1)) : 0;
+        } catch (Exception e) { return 0; }
+    }
 
     private static String js(String s) {
         StringBuilder b = new StringBuilder("\"");
@@ -245,7 +261,7 @@ public class MainActivity extends Activity {
             if (name == null || name.isEmpty()) name = Build.MODEL;
             return "{\"id\":\"" + id + "\",\"name\":" + js(name) + ",\"model\":" + js(Build.MANUFACTURER + " " + Build.MODEL) + ",\"android\":" + js(Build.VERSION.RELEASE)
                 + ",\"sdk\":" + Build.VERSION.SDK_INT + ",\"app\":" + js(Updater.currentName(MainActivity.this)) + ",\"screen\":\"" + dm.widthPixels + "x" + dm.heightPixels + "\""
-                + ",\"ram\":" + mi.totalMem + ",\"ramFree\":" + mi.availMem + ",\"disk\":" + store.total() + ",\"diskFree\":" + store.free() + ",\"saved\":" + store.size() + "}";
+                + ",\"webview\":" + chromeVersion() + ",\"ram\":" + mi.totalMem + ",\"ramFree\":" + mi.availMem + ",\"disk\":" + store.total() + ",\"diskFree\":" + store.free() + ",\"saved\":" + store.size() + "}";
         }
 
         /** The LED page passes the station logo; it is saved for the Updating screen (an address, or the picture itself). */

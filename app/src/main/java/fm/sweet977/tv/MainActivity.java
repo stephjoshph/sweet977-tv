@@ -123,19 +123,18 @@ public class MainActivity extends Activity {
             android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
             if (am != null) { am.getMemoryInfo(mi); Site.lite = am.isLowRamDevice() || mi.totalMem < 1800L * 1024 * 1024; }
         } catch (Throwable ignored) { }
-        makeWeb();
         String crash = lastCrash();
         if (crash == null && prefs.getBoolean("running", false)) { // closed by the TV (not an error in the app): show how far it got
             String t = prefs.getString("trail", ""); String[] ls = t.split("\n"); StringBuilder b = new StringBuilder();
             for (int i = Math.max(0, ls.length - 6); i < ls.length; i++) b.append(ls[i]).append('\n');
-            crash = b.append("Android ").append(Build.VERSION.RELEASE).append(" · web engine ").append(chromeV).append(" · app ").append(Updater.currentName(this)).append(Site.lite ? " · light" : "").toString();
+            crash = b.append("Android ").append(Build.VERSION.RELEASE).append(" · app ").append(Updater.currentName(this)).append(Site.lite ? " · light" : "").toString();
         }
         prefs.edit().putBoolean("running", false).putString("trail", "").apply();
         step("app started");
-        if (crash != null) { // the app closed by itself last time: show why for 30 s (a photo of it helps fix it), then go on
+        if (crash != null) { // the app closed last time: show why for 30 s before starting the web engine (a photo of it helps fix it)
             setCover("The app closed last time", crash, 0);
-            ui.postDelayed(new Runnable() { @Override public void run() { setCover("Updating", "Starting…", 2); web.loadUrl(Site.start(MainActivity.this)); } }, 30_000);
-        } else web.loadUrl(Site.start(MainActivity.this));
+            ui.postDelayed(new Runnable() { @Override public void run() { setCover("Updating", "Starting…", 2); startWeb(); } }, 30_000);
+        } else startWeb();
         ui.postDelayed(watch, WATCH_MS);
         checkSite();
         ui.postDelayed(new Runnable() {
@@ -144,6 +143,19 @@ public class MainActivity extends Activity {
                 askAutostartOnce();
             }
         }, 6000);
+    }
+
+    /** Starts the web engine and opens the LED page; if the engine won't start, says so on screen instead of closing. */
+    private void startWeb() {
+        try {
+            makeWeb();
+            step("web engine " + chromeV + " ready");
+            web.loadUrl(Site.start(MainActivity.this));
+        } catch (Throwable e) {
+            web = null;
+            setCover("The TV's web engine didn't start", String.valueOf(e).substring(0, Math.min(300, String.valueOf(e).length())) + "\nAndroid " + Build.VERSION.RELEASE + " · app " + Updater.currentName(this), 0);
+            prefs.edit().putBoolean("running", false).apply();
+        }
     }
 
     private void makeWeb() {
@@ -476,6 +488,7 @@ public class MainActivity extends Activity {
         Site.set(this, site);
         store.setHost(Uri.parse(site).getHost());
         loaded = false;
+        if (web == null) return; // the web engine isn't running yet: it opens the new address when it starts
         setCover("Updating", "Connecting to " + Uri.parse(site).getHost() + "…", 2);
         web.loadUrl(Site.start(this));
     }
@@ -492,7 +505,7 @@ public class MainActivity extends Activity {
     private final Runnable retry = new Runnable() {
         @Override
         public void run() {
-            web.loadUrl(Site.start(MainActivity.this));
+            if (web != null) web.loadUrl(Site.start(MainActivity.this));
         }
     };
 
@@ -501,6 +514,7 @@ public class MainActivity extends Activity {
         @Override
         public void run() {
             long now = SystemClock.elapsedRealtime();
+            if (web == null) { ui.postDelayed(this, WATCH_MS); return; } // not started yet
             if (loaded && !failed && now - lastBeat > FROZEN_MS) {
                 lastBeat = now;
                 web.reload();

@@ -36,6 +36,7 @@ import java.util.concurrent.Executors;
  */
 final class Store {
     private static final long LIMIT = 1500L * 1024 * 1024;      // keep up to 1.5 GB
+    static final long RESERVE = 350L * 1024 * 1024;             // but always leave this much free on the TV (small TVs have 1 GB in all; a full TV stops working)
     private static final long BIG = 400L * 1024 * 1024;         // files bigger than this are not kept
     private static final long UNUSED = 30L * 24 * 3600 * 1000;  // forget files not used for 30 days
     private static final Set<String> CDN = new HashSet<>(Arrays.asList(
@@ -48,6 +49,7 @@ final class Store {
     private volatile String host;
     private final ExecutorService bg = Executors.newSingleThreadExecutor();
     private final Set<String> queued = Collections.synchronizedSet(new HashSet<String>());
+    private final Set<String> noRoom = Collections.synchronizedSet(new HashSet<String>()); // not saved for lack of space: they play from the internet, and the LED page doesn't wait for them
     volatile String userAgent = "";
     volatile boolean online = true;
 
@@ -184,6 +186,7 @@ final class Store {
             if (c.getResponseCode() != 200) return false;
             long len = c.getContentLength();
             if (len > BIG) return false;
+            if (free() - Math.max(0, len) < RESERVE) { noRoom.add(url); return false; } // not enough room on this TV: it plays from the internet instead
             String type = c.getContentType() == null ? "application/octet-stream" : c.getContentType();
             String mime = type.split(";")[0].trim().toLowerCase();
             String path = Uri.parse(url).getPath() == null ? "" : Uri.parse(url).getPath().toLowerCase();
@@ -201,6 +204,7 @@ final class Store {
                     out.write(buf, 0, n);
                     total += n;
                     if (total > BIG) return false;
+                    if ((total & 0xFFFFF) < n && free() < RESERVE) { noRoom.add(url); return false; } // checked about every megabyte
                 }
             } finally {
                 out.close();
@@ -221,6 +225,7 @@ final class Store {
 
     /** Whether a file the LED page will need is saved on the TV (files this app doesn't keep count as ready). */
     boolean has(String url) {
+        if (noRoom.contains(url)) return true;
         try {
             Uri u = Uri.parse(url);
             String h = u.getHost();
@@ -350,6 +355,7 @@ final class Store {
             if (c.getResponseCode() != 200) return false;
             String type = c.getContentType() == null ? "" : c.getContentType().toLowerCase();
             if (!type.startsWith("image/")) return false;
+            if (free() < RESERVE) return false;
             InputStream in = c.getInputStream();
             OutputStream out = new FileOutputStream(tmp);
             byte[] buf = new byte[32 * 1024];
@@ -398,7 +404,7 @@ final class Store {
             if (now - f.lastModified() > UNUSED) { f.delete(); new File(f.getPath() + ".m").delete(); continue; }
             total += f.length();
         }
-        if (total <= LIMIT) return;
+        if (total <= LIMIT && free() >= RESERVE) return;
         all = dir.listFiles();
         if (all == null) return;
         Arrays.sort(all, new java.util.Comparator<File>() {
@@ -408,7 +414,7 @@ final class Store {
             }
         });
         for (File f : all) {
-            if (total <= LIMIT) break;
+            if (total <= LIMIT && free() >= RESERVE) break; // oldest first, until there's room again
             if (f.equals(page) || f.getName().endsWith(".m")) continue;
             total -= f.length();
             f.delete();

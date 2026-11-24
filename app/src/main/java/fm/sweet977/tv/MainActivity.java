@@ -118,6 +118,11 @@ public class MainActivity extends Activity {
         setContentView(root);
         hideBars();
         store = new Store(this);
+        try { // a small TV (about 1 GB of memory) gets the light LED page
+            android.app.ActivityManager am = (android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
+            if (am != null) { am.getMemoryInfo(mi); Site.lite = am.isLowRamDevice() || mi.totalMem < 1800L * 1024 * 1024; }
+        } catch (Throwable ignored) { }
         makeWeb();
         String crash = lastCrash();
         if (crash != null) { // the app closed by itself last time: show why for 30 s (a photo of it helps fix it), then go on
@@ -137,7 +142,7 @@ public class MainActivity extends Activity {
     private void makeWeb() {
         web = new WebView(this);
         web.setBackgroundColor(Color.BLACK);
-        web.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+        if (!Site.lite) web.setLayerType(View.LAYER_TYPE_HARDWARE, null); // a small TV can't spare a second full-screen picture in memory
         web.setVerticalScrollBarEnabled(false);
         web.setHorizontalScrollBarEnabled(false);
         WebSettings s = web.getSettings();

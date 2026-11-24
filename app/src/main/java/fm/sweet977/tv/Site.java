@@ -29,8 +29,11 @@ final class Site {
     }
 
     /** The LED page: a page address (not #led), so the host's security check can't drop it. */
+    /** A small TV (under about 1.8 GB of memory): the LED page starts in its light mode. */
+    static boolean lite = false;
+
     static String start(Context c) {
-        return get(c) + "led";
+        return get(c) + "led" + (lite ? "?lite=1" : "");
     }
 
     static String host(Context c) {
